@@ -26,3 +26,7 @@
 - Static files are served only for GET; `/` and `/static/<name>` bypass the rate limiter and `/v1/` check. Cache-Control: no-cache.
 - Page "ranked" count uses `runner_count`; ASN diversity shown from `diversity_index`.
 - Map is a 19-column CSS grid; tile intensity scales with the country's share of the max count.
+
+## Phase 10
+- `build_pending` builds epochs strictly in order starting from the lowest unbuilt one; `pending_epochs` is computed from stored epochs.
+- Leaf country is upper-cased; anything not 2 ASCII letters becomes "??". Summaries are normalised through a JSON round trip before storing.
