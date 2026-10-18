@@ -30,3 +30,7 @@
 ## Phase 10
 - `build_pending` builds epochs strictly in order starting from the lowest unbuilt one; `pending_epochs` is computed from stored epochs.
 - Leaf country is upper-cased; anything not 2 ASCII letters becomes "??". Summaries are normalised through a JSON round trip before storing.
+
+## Phase 11
+- Create transaction: target capacity accounts for the Type ID script (32-byte args) when computing occupied capacity.
+- `publish` raises `ValueError` for an unknown epoch; `stat_cell_type_*` meta is set only after `send_transaction` succeeds.
