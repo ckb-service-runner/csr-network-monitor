@@ -56,6 +56,19 @@ class Config:
     stat_cell_sighash_hash_type: str = "type"
     stat_cell_sighash_dep_tx: str = ""
     stat_cell_sighash_dep_index: int = 0
+    ping_port: int = 8131
+    discovery_interval_s: int = 600
+    discovery_backoff_s: int = 86400
+    answer_deadline_s: int = 60
+    reachable_window_s: int = 3600
+    csr_registry_code_hash: str = ""
+    csr_registry_hash_type: str = "data2"
+    config_type_args: str = ""
+    clock_update_interval_s: int = 3600
+    clock_update_fee_shannons: int = 100000
+    attest_validity_days: int = 7
+    attest_min_ok_24h: int = 1
+    attest_cache_s: int = 3600
 
 
 _REQUIRED = {"network", "public_url", "db_path", "key_path"}
@@ -67,6 +80,9 @@ _MIN = {
     "aggregate_interval_s": 1, "p2p_check_timeout_s": 1, "p2p_interval_s": 1,
     "rate_limit_per_min": 1, "gate_min_days": 1, "gate_min_runners": 1,
     "provisional_days": 0, "probe_retention_days": 1,
+    "ping_port": 1, "discovery_interval_s": 1, "discovery_backoff_s": 1,
+    "answer_deadline_s": 1, "reachable_window_s": 1, "clock_update_interval_s": 1,
+    "attest_validity_days": 1, "attest_min_ok_24h": 1, "attest_cache_s": 1,
 }
 _HASH_TYPES = ("type", "data", "data1", "data2")
 
@@ -116,14 +132,15 @@ def load_config(path) -> Config:
             raise ConfigError(f"{k!r} must be >= {_MIN[k]}")
     if "probe_timeout_s" in raw and raw["probe_timeout_s"] <= 0:
         raise ConfigError("'probe_timeout_s' must be > 0")
-    if "listen_port" in raw and raw["listen_port"] > 65535:
-        raise ConfigError("'listen_port' must be <= 65535")
+    for k in ("listen_port", "ping_port"):
+        if k in raw and raw[k] > 65535:
+            raise ConfigError(f"{k!r} must be <= 65535")
 
     cfg = Config(**raw)
     if cfg.network not in ("testnet", "mainnet"):
         raise ConfigError("'network' must be 'testnet' or 'mainnet'")
     for k in ("registration_hash_type", "stat_cell_acp_hash_type",
-              "stat_cell_sighash_hash_type"):
+              "stat_cell_sighash_hash_type", "csr_registry_hash_type"):
         if getattr(cfg, k) not in _HASH_TYPES:
             raise ConfigError(f"{k!r} must be one of {_HASH_TYPES}")
     if cfg.stat_cell_acp_dep_type not in ("code", "dep_group"):
@@ -131,6 +148,12 @@ def load_config(path) -> Config:
     for k in ("gate_max_asn_share", "gate_max_country_share"):
         if not 0 <= getattr(cfg, k) <= 1:
             raise ConfigError(f"{k!r} must be between 0 and 1")
+
+    if cfg.config_type_args:
+        a = cfg.config_type_args
+        if not (a.startswith("0x") and len(a) == 66
+                and all(c in "0123456789abcdefABCDEF" for c in a[2:])):
+            raise ConfigError("'config_type_args' must be empty or 32 bytes hex (0x...)")
 
     try:
         u = urlparse(cfg.node_rpc)

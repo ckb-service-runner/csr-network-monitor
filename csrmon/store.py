@@ -17,7 +17,7 @@ create table if not exists probes(
   runner_id text, ts integer, slot integer, mode text, result text, failure_reason text,
   latency_ms integer, tip_number integer, lag integer, in_sync integer, peers_out integer,
   csr_version text, ckb_version text, ip_hash text, country text, asn integer,
-  primary key(runner_id, slot));
+  p2p_verified integer, primary key(runner_id, slot));
 create index if not exists probes_ts on probes(runner_id, ts);
 create table if not exists p2p_checks(
   id integer primary key autoincrement, runner_id text, ts integer, heights text, served integer,
@@ -30,6 +30,15 @@ create table if not exists daily_stats(
 create table if not exists epochs(
   epoch integer primary key, start integer, "end" integer, merkle_root text, data_hex text,
   stat_cell_tx text, summary_json text);
+create table if not exists registrations(
+  peer_id text, service_pubkey text, expiry_ms integer, outpoint text);
+create index if not exists registrations_peer on registrations(peer_id);
+create table if not exists issued_attestations(
+  id integer primary key autoincrement, peer_id text, service_pubkey text, issued_at integer,
+  attestation text);
+create index if not exists issued_key on issued_attestations(peer_id, service_pubkey);
+create table if not exists discovery(
+  ip text primary key, node_id text, last_try integer, last_ok integer);
 create table if not exists meta(key text primary key, value text);
 """
 
@@ -67,6 +76,9 @@ class Store:
             self._con.execute("pragma journal_mode=wal")
             self._con.execute("pragma busy_timeout=5000")
             self._con.executescript(_SCHEMA)
+            cols = {r[1] for r in self._con.execute("pragma table_info(probes)")}
+            if "p2p_verified" not in cols:
+                self._con.execute("ALTER TABLE probes ADD COLUMN p2p_verified INTEGER")
 
     def close(self):
         with self._lock:
@@ -141,19 +153,74 @@ class Store:
             self._con.execute("update runners set flags=? where runner_id=?",
                               (json.dumps(sorted(flags)), runner_id))
 
+    def find_runner_by_peer(self, peer_id):
+        return self._runner(self._one(
+            "select * from runners where peer_id=? and status='active'"
+            " order by last_seen is null, last_seen desc, first_seen desc limit 1", (peer_id,)))
+
+    # ---- registrations / attestations / discovery ----
+    def set_registrations(self, rows):
+        with self._lock:
+            self._con.execute("begin")
+            try:
+                self._con.execute("delete from registrations")
+                self._con.executemany(
+                    "insert into registrations(peer_id, service_pubkey, expiry_ms, outpoint)"
+                    " values(?,?,?,?)",
+                    [(r["peer_id"], r["service_pubkey"], r["expiry_ms"], r["outpoint"])
+                     for r in rows])
+                self._con.execute("commit")
+            except Exception:
+                self._con.execute("rollback")
+                raise
+
+    def registration_for(self, peer_id):
+        return self._one(
+            "select peer_id, service_pubkey, expiry_ms, outpoint from registrations"
+            " where peer_id=? order by expiry_ms desc limit 1", (peer_id,))
+
+    def save_issued(self, peer_id, service_pubkey, *, issued_at, attestation):
+        with self._lock:
+            self._con.execute(
+                "insert into issued_attestations(peer_id, service_pubkey, issued_at, attestation)"
+                " values(?,?,?,?)",
+                (peer_id, service_pubkey, issued_at, json.dumps(attestation, sort_keys=True)))
+
+    def last_issued(self, peer_id, service_pubkey):
+        r = self._one(
+            "select issued_at, attestation from issued_attestations where peer_id=? and"
+            " service_pubkey=? order by issued_at desc, id desc limit 1", (peer_id, service_pubkey))
+        if r is None:
+            return None
+        return {"issued_at": r["issued_at"], "attestation": json.loads(r["attestation"])}
+
+    def discovery_mark(self, ip, node_id, *, ts, ok):
+        with self._lock:
+            self._con.execute(
+                "insert into discovery(ip, node_id, last_try, last_ok) values(?,?,?,?)"
+                " on conflict(ip) do update set node_id=excluded.node_id,"
+                " last_try=excluded.last_try, last_ok=coalesce(excluded.last_ok, last_ok)",
+                (ip, node_id, ts, ts if ok else None))
+
+    def discovery_get(self, ip):
+        return self._one("select ip, node_id, last_try, last_ok from discovery where ip=?", (ip,))
+
     # ---- probes ----
     def record_probe(self, runner_id, *, ts, slot, mode, result, failure_reason=None,
                      latency_ms=None, tip_number=None, lag=None, in_sync=None, peers_out=None,
                      csr_version=None, ckb_version=None, ip_hash=None, country=None,
-                     asn=None) -> bool:
+                     asn=None, p2p_verified=None) -> bool:
         if result not in _PROBE_RESULTS:
             raise ValueError(f"invalid probe result {result!r}")
         ins = None if in_sync is None else (1 if in_sync else 0)
+        pv = None if p2p_verified is None else (1 if p2p_verified else 0)
         with self._lock:
             cur = self._con.execute(
-                "insert or ignore into probes values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "insert or ignore into probes(runner_id, ts, slot, mode, result, failure_reason,"
+                " latency_ms, tip_number, lag, in_sync, peers_out, csr_version, ckb_version,"
+                " ip_hash, country, asn, p2p_verified) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (runner_id, ts, slot, mode, result, failure_reason, latency_ms, tip_number, lag,
-                 ins, peers_out, csr_version, ckb_version, ip_hash, country, asn))
+                 ins, peers_out, csr_version, ckb_version, ip_hash, country, asn, pv))
             if cur.rowcount == 0:
                 return False
             if result == "ok":
@@ -172,8 +239,10 @@ class Store:
 
     @staticmethod
     def _probe(r):
-        if r is not None and r["in_sync"] is not None:
-            r["in_sync"] = bool(r["in_sync"])
+        if r is not None:
+            for k in ("in_sync", "p2p_verified"):
+                if r[k] is not None:
+                    r[k] = bool(r[k])
         return r
 
     def probes(self, runner_id, since=None, until=None):

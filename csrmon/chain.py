@@ -86,6 +86,9 @@ class RpcChain:
             if not cursor or cursor == "0x":
                 return
 
+    def get_peers(self):
+        return self.call("get_peers", [])
+
     def send_transaction(self, tx):
         return self.call("send_transaction", [tx, "passthrough"])
 
