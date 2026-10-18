@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import scoring
 from . import __version__
@@ -44,10 +44,11 @@ def _median(vals):
 
 
 class Api:
-    def __init__(self, store, config, monitor_secret, *, prober=None, chain=None,
+    def __init__(self, store, config, monitor_secret, *, prober=None, chain=None, attester=None,
                  clock=time.time, version=__version__):
         from .crypto import pubkey_from_secret
         self.store, self.config, self.prober, self.chain = store, config, prober, chain
+        self.attester = attester
         self.clock, self.version = clock, version
         self.pubkey = "0x" + pubkey_from_secret(monitor_secret).hex()
         self._lock = threading.Lock()
@@ -149,6 +150,16 @@ class Api:
 
     def _route(self, method, path, query, body, ip):
         segs = path[len("/v1/"):].strip("/").split("/") if path != "/v1/" else [""]
+        today = day_of(self.clock())
+        if segs in (["checkin"], ["answer"], ["attest"]):
+            self._method(method, "POST")
+            return self._post_csr(segs[0], body, ip)
+        if segs == ["network"]:
+            self._method(method, "GET")
+            return self._network()
+        if len(segs) == 2 and segs[0] == "nodes":
+            self._method(method, "GET")
+            return self._node(unquote(segs[1]), today)
         if segs == ["monitor"]:
             self._method(method, "GET")
             return self._monitor()
@@ -157,10 +168,6 @@ class Api:
         if segs[0] != self.config.network:
             raise _err(404, "unknown_network")
         rest = segs[1:]
-        today = day_of(self.clock())
-        if rest == ["checkin"] or rest == ["checkin", "response"]:
-            self._method(method, "POST")
-            return self._checkin(rest, body, ip)
         if rest == ["summary"]:
             self._method(method, "GET")
             return self._summary(today)
@@ -301,19 +308,61 @@ class Api:
             raise _err(404, "unknown_epoch")
         return {**e["summary"], **self._epoch_row(e)}
 
-    def _checkin(self, rest, body, ip):
+    def _post_csr(self, name, body, ip):
         if len(body) > MAX_BODY:
             raise _err(413, "too_large")
-        if self.prober is None:
+        target = self.attester if name == "attest" else self.prober
+        if target is None:
             raise _err(503, "unavailable")
         try:
             obj = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeError):
             raise _err(400, "bad_request") from None
-        fn = (self.prober.handle_checkin if len(rest) == 1
-              else self.prober.handle_checkin_response)
-        status, out = fn(obj, ip, self.clock())
+        fn = {"checkin": "handle_checkin", "answer": "handle_answer",
+              "attest": "handle_attest"}[name]
+        status, out = getattr(target, fn)(obj, ip, self.clock())
         return self._raise_or(status, out)
+
+    def _network(self):
+        now = self.clock()
+        runners = self.store.list_runners()
+        since = now - self.config.reachable_window_s
+        reachable = 0
+        counts = {}
+        for r in runners:
+            if any(p["result"] == "ok" for p in self.store.probes(r["runner_id"], since=since)):
+                reachable += 1
+            c = r["country"]
+            if c and c != "??":
+                counts[c] = counts.get(c, 0) + 1
+        countries = [{"code": c, "count": n} for c, n in
+                     sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+        return {"nodes_total": len(runners), "nodes_reachable": reachable,
+                "countries": countries, "updated_at": int(now)}
+
+    def _node(self, peer_id, today):
+        r = self.store.find_runner_by_peer(peer_id)
+        ranking = self._ranking(today)
+        item = None if r is None else next(
+            (i for i in ranking if i["runner_id"] == r["runner_id"]), None)
+        if item is None or item.get("rank") is None:
+            raise _err(404, "not_ranked")
+        now = self.clock()
+        probes = self.store.probes(r["runner_id"], since=now - 86400)
+        p2p = any(p["result"] == "ok" and p["p2p_verified"] for p in probes)
+        lp = self.store.last_probe(r["runner_id"])
+        reg = self.store.registration_for(peer_id)
+        if reg is None:
+            att = {"status": "none", "expiry": None}
+        else:
+            att = {"status": "valid" if reg["expiry_ms"] > now * 1000 else "expired",
+                   "expiry": reg["expiry_ms"] // 1000}
+        return {"peer_id": peer_id, "rank": item["rank"],
+                "of": sum(1 for i in ranking if i.get("rank") is not None),
+                "availability": {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
+                                 "d365": round(item["a365"], 4)},
+                "check_type": "p2p_verified" if p2p else "challenge_only",
+                "attestation": att, "last_check_at": int(lp["ts"]) if lp else 0}
 
     @staticmethod
     def _raise_or(status, out):

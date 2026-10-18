@@ -1,4 +1,5 @@
-"""Phase 8 acceptance: public REST API, rate limits, privacy, HTTP server."""
+"""Phase 8 acceptance: public REST API, rate limits, privacy, HTTP server.
+(v2 version: the v1 check-in routes are removed.)"""
 import base64
 import json
 import random
@@ -116,7 +117,7 @@ def test_routing_errors(env):
     status, _, body = env["api"].handle("DELETE", "/v1/monitor", {}, b"", "1.1.1.1")
     assert status == 405
     status, _, body = env["api"].handle("GET", "/v1/testnet/checkin", {}, b"", "1.1.1.1")
-    assert status == 405
+    assert status == 404          # v2: the v1 check-in routes are gone
 
 
 def test_summary_matches_scoring(env):
@@ -229,23 +230,11 @@ def test_epochs(env):
     assert get(env, "/v1/testnet/epochs/x")[0] == 404
 
 
-def test_checkin_over_api(env):
-    rid = add(env["st"], 1, mode="push")
-    status, body = post(env, "/v1/testnet/checkin", protocol.make_checkin(sk(1), "testnet", NOW))
-    assert status == 200
-    ch = body["challenge"]
-    tip = 80_000 - 1
-    resp = protocol.sign_response(
-        sk(1), ch, peer_id=protocol.peer_id_from_pubkey(crypto.pubkey_from_secret(sk(101))),
-        tip_number=tip, tip_hash=block_hash(tip), block_hash=block_hash(ch["block_height"]),
-        ibd=False, peers_out=8, csr_version="0.1.0", ckb_version="0.203.0")
-    status, res = post(env, "/v1/testnet/checkin/response", {"runner_id": rid, "response": resp})
-    assert status == 200 and res["result"] == "ok"
-    assert post(env, "/v1/testnet/checkin", None, raw=b"{nope")[0] == 400
-    assert post(env, "/v1/testnet/checkin", None, raw=b"x" * 20000)[0] == 413
-    assert post(env, "/v1/mainnet/checkin", {"a": 1})[0] == 404
-    env["api"].prober = None
-    assert post(env, "/v1/testnet/checkin", {"a": 1}) == (503, {"error": "unavailable"})
+def test_v1_checkin_routes_removed(env):
+    # v2: CSR nodes check in at /v1/checkin and /v1/answer (test_v2_api.py)
+    for path in ("/v1/testnet/checkin", "/v1/testnet/checkin/response"):
+        status, _, _ = env["api"].handle("POST", path, {}, b"{}", "5.1.2.3")
+        assert status == 404
 
 
 def test_rate_limit(env):
@@ -339,7 +328,7 @@ def test_http_server(env):
             assert r.status == 200
             assert r.headers["Access-Control-Allow-Origin"] == "*"
             assert json.loads(r.read())["network"] == "testnet"
-        req = urllib.request.Request(f"http://127.0.0.1:{srv.port}/v1/testnet/checkin",
+        req = urllib.request.Request(f"http://127.0.0.1:{srv.port}/v1/checkin",
                                      data=b"{}", headers={"Content-Type": "application/json"})
         try:
             urllib.request.urlopen(req, timeout=5)
