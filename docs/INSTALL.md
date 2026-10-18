@@ -1,0 +1,139 @@
+# Installation
+
+## Requirements
+
+- Linux or WSL2 with systemd, Python ≥ 3.11 (no pip packages needed at runtime).
+- A **synced CKB full node** of the same network with JSON-RPC on localhost (`http://127.0.0.1:8114`) and the `Indexer` and `Chain` modules enabled. The monitor refuses non-loopback `node_rpc`.
+- Optional: a second node or provider for the tip cross-check, geolocation CSV files, a P2P helper.
+
+## Install
+
+```sh
+sudo useradd --system --home /var/lib/csr-network-monitor --shell /usr/sbin/nologin csrmon
+sudo mkdir -p /opt/csr-network-monitor /etc/csr-network-monitor /var/lib/csr-network-monitor
+sudo python3 -m venv /opt/csr-network-monitor/venv
+sudo /opt/csr-network-monitor/venv/bin/pip install /path/to/csr-network-monitor
+sudo cp config/monitor-testnet.toml /etc/csr-network-monitor/monitor-testnet.toml   # and edit
+sudo chown -R csrmon: /var/lib/csr-network-monitor
+sudo -u csrmon /opt/csr-network-monitor/venv/bin/csrmon check-config --config /etc/csr-network-monitor/monitor-testnet.toml
+sudo -u csrmon /opt/csr-network-monitor/venv/bin/csrmon keygen --config /etc/csr-network-monitor/monitor-testnet.toml
+sudo -u csrmon /opt/csr-network-monitor/venv/bin/csrmon init-db --config /etc/csr-network-monitor/monitor-testnet.toml
+```
+
+`keygen` prints the public key and its `blake160` (the lock args of the monitor address). The key file is created with mode 0600; back it up. `init-db` records `monitor_start`; monitor downtime before that or later never counts against runners.
+
+## systemd
+
+```sh
+sudo cp deploy/csr-network-monitor@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now csr-network-monitor@testnet
+journalctl -u csr-network-monitor@testnet -f
+```
+
+The instance name selects `/etc/csr-network-monitor/monitor-<name>.toml`. Run `@mainnet` the same way (port 8481).
+
+## Caddy
+
+Copy `deploy/Caddyfile.example` to `/etc/caddy/Caddyfile`, set your host name and reload. It routes `/v1/testnet/*` to 127.0.0.1:8480, `/v1/mainnet/*` to 127.0.0.1:8481 and `/v1/monitor`, `/`, `/static/*` to the testnet instance. Caddy is a trusted proxy (`trusted_proxies`), the monitor then reads the client IP from `X-Forwarded-For`.
+
+## Geolocation
+
+Download the free **DB-IP Lite** country and ASN CSV files and point `geo_country_csv` / `geo_asn_csv` at them. **MaxMind GeoLite2** CSVs must first be converted to the same columns (`start_ip,end_ip,value…` as in the DB-IP files: country code, or ASN and organisation). Without files all runners have country `??`. Only a salted hash of a runner IP is stored; IPs and endpoints are never exposed.
+
+## Tip cross-check
+
+Every `crosscheck_interval_s` the monitor compares its node tip with `second_tip_source` (an independent node RPC). If the local node is unreachable or differs by more than `sync_threshold`, probing is paused; paused slots are `excluded`, never misses.
+
+## Stat cell
+
+1. Verify the stat cell values for your network in the config (ACP and sighash code hash and dep group, see the comments in the example config).
+2. Take the `blake160` printed by `keygen`, build the address with the sighash lock and send enough CKB (more than `stat_cell_capacity_ckb` plus fees) to it.
+3. Set `stat_cell_enabled = true`, restart. Each hour the monitor builds finished weekly epochs and publishes each one that has no transaction yet (first one creates the stat cell with a Type ID, later ones update it). The type hash appears in `/v1/monitor`.
+
+## Forwarded topology (fixed-IP VPS in front of the monitor host)
+
+The monitor host may sit behind NAT. A VPS with a fixed IP forwards port 443 and the CKB P2P port through WireGuard. There must be **no SNAT / masquerade** on the VPS, so the monitor still sees runner source IPs (needed for geolocation and the P2P check), and replies on the monitor host must return through the tunnel.
+
+Addresses used below: VPS public `203.0.113.10`, WireGuard `10.77.0.1` (VPS) and `10.77.0.2` (monitor host), P2P port `8115`.
+
+### VPS: `/etc/wireguard/wg0.conf`
+
+```ini
+[Interface]
+Address = 10.77.0.1/24
+ListenPort = 51820
+PrivateKey = <vps private key>
+
+[Peer]
+PublicKey = <monitor host public key>
+# the monitor host AND every source address whose replies are routed back is covered by the
+# policy routing on the other side; here only the tunnel address is needed
+AllowedIPs = 10.77.0.2/32
+```
+
+### VPS: forwarding with nftables (`/etc/nftables.conf`)
+
+```nft
+table inet fwd {
+  chain prerouting {
+    type nat hook prerouting priority dstnat;
+    # destination NAT only; do not add any masquerade/snat rule
+    iifname "eth0" tcp dport { 443, 8115 } dnat ip to 10.77.0.2
+  }
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+    iifname "eth0" oifname "wg0" tcp dport { 443, 8115 } accept
+    iifname "wg0" oifname "eth0" accept
+  }
+}
+```
+
+Also `sysctl -w net.ipv4.ip_forward=1`.
+
+### Monitor host: `/etc/wireguard/wg0.conf`
+
+```ini
+[Interface]
+Address = 10.77.0.2/24
+PrivateKey = <monitor host private key>
+# do not let wg-quick install a default route: we route selectively
+Table = off
+# connection marking: packets that arrived through wg0 get their replies sent back through wg0
+PostUp = ip rule add fwmark 0x77 table 77 priority 100
+PostUp = ip route add default via 10.77.0.1 dev wg0 table 77
+PostUp = nft -f /etc/csr-network-monitor/connmark.nft
+PostDown = ip rule del fwmark 0x77 table 77 priority 100
+PostDown = ip route flush table 77
+PostDown = nft delete table inet csrmark
+
+[Peer]
+PublicKey = <vps public key>
+Endpoint = 203.0.113.10:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+```
+
+`AllowedIPs = 0.0.0.0/0` is safe because `Table = off` keeps it out of the main routing table; table 77 is used only for marked packets.
+
+### Monitor host: `/etc/csr-network-monitor/connmark.nft`
+
+```nft
+table inet csrmark {
+  chain pre {
+    type filter hook prerouting priority mangle;
+    # remember that a connection came in through the tunnel
+    iifname "wg0" ct mark set 0x77
+  }
+  chain out {
+    type route hook output priority mangle;
+    # replies of such connections carry the mark and so use table 77 (back through wg0)
+    ct mark 0x77 meta mark set ct mark
+  }
+}
+```
+
+The services (Caddy on 443, the CKB node on 8115) simply listen on all addresses; connections from the Internet arrive with the runner's real source IP and the reply goes back via `ip rule fwmark 0x77`. Set `rp_filter` to loose (`net.ipv4.conf.wg0.rp_filter=2`, `net.ipv4.conf.all.rp_filter=2`) so that packets with Internet source addresses are accepted from `wg0`.
+
+Check: `curl https://monitor.example.org/v1/monitor` from outside, and look at `ss -tn` on the monitor host: peers must show real client addresses, not `10.77.0.1`.

@@ -34,3 +34,10 @@
 ## Phase 11
 - Create transaction: target capacity accounts for the Type ID script (32-byte args) when computing occupied capacity.
 - `publish` raises `ValueError` for an unknown epoch; `stat_cell_type_*` meta is set only after `send_transaction` succeeds.
+
+## Phase 12
+- Daemon tasks run on a simple due-time schedule in one loop (0.5 s tick); each is wrapped in try/except. P2P checks run in a separate thread every 5 s.
+- Epoch publishing walks all epochs without `stat_cell_tx` in order; a failure stops that pass and is retried next hour.
+- `show-key` exits 1 if the key file is missing; `keygen` on a malformed key file exits 1.
+- The wheel ships `csrmon/web/*` as package data; the Dockerfile only copies the package and runs it from there (no pip install).
+- Docs: the DB-IP/GeoLite2 CSV column description is generic (`start_ip,end_ip,value…`); the testnet ACP dep group is left as a placeholder to look up.

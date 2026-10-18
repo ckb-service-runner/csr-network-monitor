@@ -1,0 +1,19 @@
+[Unit]
+Description=CSR Network Monitor (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=csrmon
+ExecStart=/opt/csr-network-monitor/venv/bin/python -m csrmon run --config /etc/csr-network-monitor/monitor-%i.toml
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/csr-network-monitor
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target
