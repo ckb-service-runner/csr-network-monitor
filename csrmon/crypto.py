@@ -162,3 +162,22 @@ def verify(pubkey33: bytes, msg32: bytes, sig65: bytes) -> bool:
         return recover(msg32, sig65) == bytes(pubkey33)
     except Exception:
         return False
+
+
+def verify_ecdsa(pubkey33: bytes, msg32: bytes, sig64: bytes) -> bool:
+    """Plain ECDSA verification of a compact r||s signature; high-S is accepted."""
+    try:
+        pubkey33, msg32, sig64 = bytes(pubkey33), bytes(msg32), bytes(sig64)
+        if len(pubkey33) != 33 or pubkey33[0] not in (2, 3) or len(msg32) != 32 or len(sig64) != 64:
+            return False
+        r = int.from_bytes(sig64[:32], "big")
+        s = int.from_bytes(sig64[32:], "big")
+        if not 0 < r < N or not 0 < s < N:
+            return False
+        q = _lift_x(int.from_bytes(pubkey33[1:], "big"), pubkey33[0] & 1)
+        z = int.from_bytes(msg32, "big")
+        sinv = pow(s, -1, N)
+        pt = _affine(_add(_mul(z * sinv % N, G), _mul(r * sinv % N, q)))
+        return pt is not None and pt[0] % N == r
+    except Exception:
+        return False
