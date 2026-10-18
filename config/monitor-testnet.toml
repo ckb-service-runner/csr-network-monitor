@@ -1,0 +1,70 @@
+# CSR Network Monitor – example configuration for testnet.
+# One process serves one network. Copy to /etc/csr-network-monitor/monitor-testnet.toml.
+
+network = "testnet"
+public_url = "https://monitor.example.org"        # shown in /v1/monitor
+node_rpc = "http://127.0.0.1:8114"                # local synced CKB node (loopback only)
+db_path = "/var/lib/csr-network-monitor/testnet/monitor.db"
+key_path = "/var/lib/csr-network-monitor/testnet/monitor.key"
+# salt_path = "/var/lib/csr-network-monitor/testnet/monitor.db.salt"   # default: db_path + ".salt"
+
+listen_host = "127.0.0.1"                         # put a reverse proxy (Caddy) in front
+listen_port = 8480
+
+# --- probing ---
+probe_interval_s = 600        # slot length; one recorded outcome per runner per slot
+probe_jitter_s = 60
+probe_timeout_s = 5
+probe_workers = 32
+sync_threshold = 10           # blocks behind that still count as in sync
+# second_tip_source = "http://127.0.0.1:8115"     # optional second node for the tip cross-check
+crosscheck_interval_s = 600
+aggregate_interval_s = 600
+
+# --- registration discovery ---
+# Type script of the registration cells (set once the on-chain script is decided).
+registration_code_hash = ""
+registration_hash_type = "type"
+registration_args = "0x"
+allow_insecure_endpoints = false   # true only for tests (allows http:// and loopback endpoints)
+
+# --- geolocation (DB-IP Lite CSV; GeoLite2 must be converted to the same columns) ---
+# geo_country_csv = "/var/lib/csr-network-monitor/geo/dbip-country-lite.csv"
+# geo_asn_csv = "/var/lib/csr-network-monitor/geo/dbip-asn-lite.csv"
+
+# --- P2P full-node check (external helper, see docs/P2P_HELPER.md) ---
+# p2p_check_cmd = "/opt/csr-network-monitor/bin/p2p-helper"
+p2p_check_timeout_s = 120
+p2p_interval_s = 86400
+
+# --- API ---
+rate_limit_per_min = 60
+trusted_proxies = ["127.0.0.1", "::1"]   # X-Forwarded-For is honoured only from these
+
+# --- ranking gates and retention ---
+gate_min_days = 365
+gate_min_runners = 60
+gate_max_asn_share = 0.25
+gate_max_country_share = 0.5
+provisional_days = 7
+probe_retention_days = 90
+
+# --- stat cell (weekly signed summary on chain) ---
+# Keep disabled until the monitor address is funded and every value below has been
+# verified on the chosen network.
+stat_cell_enabled = false
+# stat_cell_capacity_ckb = 400
+# stat_cell_fee_shannons = 100000
+#
+# Anyone-can-pay lock (ACP) – values TO VERIFY on testnet before enabling:
+# stat_cell_acp_code_hash = "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356"
+# stat_cell_acp_hash_type = "type"
+# stat_cell_acp_dep_tx = "<testnet ACP dep group tx hash: look up in the CKB system scripts list>"
+# stat_cell_acp_dep_index = 0
+# stat_cell_acp_dep_type = "dep_group"
+#
+# Secp256k1 sighash lock (verify as well):
+# stat_cell_sighash_code_hash = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
+# stat_cell_sighash_hash_type = "type"
+# stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"
+# stat_cell_sighash_dep_index = 0

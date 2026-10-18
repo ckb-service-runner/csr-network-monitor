@@ -1,0 +1,314 @@
+"""SQLite store (thread-safe, WAL)."""
+import json
+import sqlite3
+import statistics
+import threading
+from datetime import datetime, timedelta, timezone
+
+from . import geo
+
+_SCHEMA = """
+create table if not exists runners(
+  runner_id text primary key, service_pubkey text, peer_id text, p2p_pubkey text, reg_outpoint text,
+  mode text, endpoint text, p2p_port integer, first_seen integer, last_seen integer, status text,
+  flags text not null default '[]', ranking_opt_in integer, country text, region text, asn integer,
+  csr_version text, ckb_version text);
+create table if not exists probes(
+  runner_id text, ts integer, slot integer, mode text, result text, failure_reason text,
+  latency_ms integer, tip_number integer, lag integer, in_sync integer, peers_out integer,
+  csr_version text, ckb_version text, ip_hash text, country text, asn integer,
+  primary key(runner_id, slot));
+create index if not exists probes_ts on probes(runner_id, ts);
+create table if not exists p2p_checks(
+  id integer primary key autoincrement, runner_id text, ts integer, heights text, served integer,
+  latency_ms integer, peer_id_seen text, result text);
+create index if not exists p2p_ts on p2p_checks(runner_id, ts);
+create table if not exists daily_stats(
+  runner_id text, day text, probes_total integer, probes_ok integer, in_sync integer,
+  p2p_total integer, p2p_ok integer, median_lag, median_peers, score real,
+  primary key(runner_id, day));
+create table if not exists epochs(
+  epoch integer primary key, start integer, "end" integer, merkle_root text, data_hex text,
+  stat_cell_tx text, summary_json text);
+create table if not exists meta(key text primary key, value text);
+"""
+
+_STATUSES = ("active", "opted_out", "deregistered")
+_PROBE_RESULTS = ("ok", "fail", "excluded")
+_P2P_RESULTS = ("ok", "fail", "identity_mismatch", "error")
+
+
+def day_of(ts) -> str:
+    return datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d")
+
+
+def day_start(day) -> int:
+    d = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return int(d.timestamp())
+
+
+def add_days(day, n) -> str:
+    d = datetime.strptime(day, "%Y-%m-%d") + timedelta(days=n)
+    return d.strftime("%Y-%m-%d")
+
+
+def _whole(x):
+    if x is None:
+        return None
+    return int(x) if float(x) == int(x) else x
+
+
+class Store:
+    def __init__(self, path):
+        self._lock = threading.RLock()
+        self._con = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self._con.row_factory = sqlite3.Row
+        with self._lock:
+            self._con.execute("pragma journal_mode=wal")
+            self._con.execute("pragma busy_timeout=5000")
+            self._con.executescript(_SCHEMA)
+
+    def close(self):
+        with self._lock:
+            self._con.close()
+
+    def _all(self, sql, args=()):
+        with self._lock:
+            return [dict(r) for r in self._con.execute(sql, args).fetchall()]
+
+    def _one(self, sql, args=()):
+        rows = self._all(sql, args)
+        return rows[0] if rows else None
+
+    # ---- runners ----
+    @staticmethod
+    def _runner(r):
+        if r is None:
+            return None
+        r["flags"] = sorted(json.loads(r["flags"] or "[]"))
+        r["ranking_opt_in"] = bool(r["ranking_opt_in"])
+        return r
+
+    def upsert_runner(self, runner_id, *, service_pubkey, peer_id, p2p_pubkey, reg_outpoint, mode,
+                      endpoint, p2p_port, ranking_opt_in, now) -> bool:
+        status = "active" if ranking_opt_in else "opted_out"
+        opt = 1 if ranking_opt_in else 0
+        with self._lock:
+            exists = self._con.execute("select 1 from runners where runner_id=?",
+                                       (runner_id,)).fetchone()
+            if exists:
+                self._con.execute(
+                    "update runners set service_pubkey=?, peer_id=?, p2p_pubkey=?, reg_outpoint=?,"
+                    " mode=?, endpoint=?, p2p_port=?, ranking_opt_in=?, status=? where runner_id=?",
+                    (service_pubkey, peer_id, p2p_pubkey, reg_outpoint, mode, endpoint, p2p_port,
+                     opt, status, runner_id))
+                return False
+            self._con.execute(
+                "insert into runners(runner_id, service_pubkey, peer_id, p2p_pubkey, reg_outpoint,"
+                " mode, endpoint, p2p_port, first_seen, last_seen, status, flags, ranking_opt_in)"
+                " values(?,?,?,?,?,?,?,?,?,NULL,?,'[]',?)",
+                (runner_id, service_pubkey, peer_id, p2p_pubkey, reg_outpoint, mode, endpoint,
+                 p2p_port, now, status, opt))
+            return True
+
+    def get_runner(self, runner_id):
+        return self._runner(self._one("select * from runners where runner_id=?", (runner_id,)))
+
+    def list_runners(self, statuses=("active",)):
+        if statuses is None:
+            rows = self._all("select * from runners order by runner_id")
+        else:
+            statuses = tuple(statuses)
+            q = ",".join("?" * len(statuses))
+            rows = self._all(f"select * from runners where status in ({q}) order by runner_id",
+                             statuses)
+        return [self._runner(r) for r in rows]
+
+    def set_status(self, runner_id, status):
+        if status not in _STATUSES:
+            raise ValueError(f"invalid status {status!r}")
+        with self._lock:
+            self._con.execute("update runners set status=? where runner_id=?", (status, runner_id))
+
+    def set_flag(self, runner_id, flag, on):
+        with self._lock:
+            row = self._con.execute("select flags from runners where runner_id=?",
+                                    (runner_id,)).fetchone()
+            if row is None:
+                return
+            flags = set(json.loads(row[0] or "[]"))
+            flags.add(flag) if on else flags.discard(flag)
+            self._con.execute("update runners set flags=? where runner_id=?",
+                              (json.dumps(sorted(flags)), runner_id))
+
+    # ---- probes ----
+    def record_probe(self, runner_id, *, ts, slot, mode, result, failure_reason=None,
+                     latency_ms=None, tip_number=None, lag=None, in_sync=None, peers_out=None,
+                     csr_version=None, ckb_version=None, ip_hash=None, country=None,
+                     asn=None) -> bool:
+        if result not in _PROBE_RESULTS:
+            raise ValueError(f"invalid probe result {result!r}")
+        ins = None if in_sync is None else (1 if in_sync else 0)
+        with self._lock:
+            cur = self._con.execute(
+                "insert or ignore into probes values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (runner_id, ts, slot, mode, result, failure_reason, latency_ms, tip_number, lag,
+                 ins, peers_out, csr_version, ckb_version, ip_hash, country, asn))
+            if cur.rowcount == 0:
+                return False
+            if result == "ok":
+                self._con.execute(
+                    "update runners set last_seen=max(coalesce(last_seen,0), ?) where runner_id=?",
+                    (ts, runner_id))
+            if country is not None:
+                self._con.execute(
+                    "update runners set country=?, region=?, asn=? where runner_id=?",
+                    (country, geo.region_for(country), asn, runner_id))
+            if csr_version is not None:
+                self._con.execute(
+                    "update runners set csr_version=?, ckb_version=? where runner_id=?",
+                    (csr_version, ckb_version, runner_id))
+            return True
+
+    @staticmethod
+    def _probe(r):
+        if r is not None and r["in_sync"] is not None:
+            r["in_sync"] = bool(r["in_sync"])
+        return r
+
+    def probes(self, runner_id, since=None, until=None):
+        sql, args = "select * from probes where runner_id=?", [runner_id]
+        if since is not None:
+            sql += " and ts>=?"
+            args.append(since)
+        if until is not None:
+            sql += " and ts<?"
+            args.append(until)
+        return [self._probe(r) for r in self._all(sql + " order by ts, slot", args)]
+
+    def last_probe(self, runner_id):
+        return self._probe(self._one(
+            "select * from probes where runner_id=? order by ts desc, slot desc limit 1",
+            (runner_id,)))
+
+    def has_probe(self, runner_id, slot) -> bool:
+        return self._one("select 1 as x from probes where runner_id=? and slot=?",
+                         (runner_id, slot)) is not None
+
+    # ---- p2p ----
+    def record_p2p_check(self, runner_id, *, ts, heights, served, latency_ms, peer_id_seen, result):
+        if result not in _P2P_RESULTS:
+            raise ValueError(f"invalid p2p result {result!r}")
+        with self._lock:
+            self._con.execute(
+                "insert into p2p_checks(runner_id, ts, heights, served, latency_ms, peer_id_seen,"
+                " result) values(?,?,?,?,?,?,?)",
+                (runner_id, ts, json.dumps(list(heights)), served, latency_ms, peer_id_seen,
+                 result))
+
+    @staticmethod
+    def _p2p(r):
+        if r is not None:
+            r.pop("id", None)
+            r["heights"] = json.loads(r["heights"])
+        return r
+
+    def p2p_checks(self, runner_id):
+        return [self._p2p(r) for r in self._all(
+            "select * from p2p_checks where runner_id=? order by ts, id", (runner_id,))]
+
+    def last_p2p_check(self, runner_id):
+        return self._p2p(self._one(
+            "select * from p2p_checks where runner_id=? order by ts desc, id desc limit 1",
+            (runner_id,)))
+
+    # ---- daily ----
+    def aggregate_day(self, day) -> int:
+        lo, hi = day_start(day), day_start(day) + 86400
+        with self._lock:
+            ids = {r[0] for r in self._con.execute(
+                "select runner_id from probes where ts>=? and ts<? union "
+                "select runner_id from p2p_checks where ts>=? and ts<?", (lo, hi, lo, hi))}
+            for rid in sorted(ids):
+                pr = self._all("select result, in_sync, lag, peers_out from probes"
+                               " where runner_id=? and ts>=? and ts<?", (rid, lo, hi))
+                ok = [p for p in pr if p["result"] == "ok"]
+                total = len(ok) + sum(1 for p in pr if p["result"] == "fail")
+                lags = [p["lag"] for p in ok if p["lag"] is not None]
+                peers = [p["peers_out"] for p in ok if p["peers_out"] is not None]
+                p2 = self._all("select result from p2p_checks where runner_id=? and ts>=? and ts<?",
+                               (rid, lo, hi))
+                vals = (total, len(ok), sum(1 for p in ok if p["in_sync"]), len(p2),
+                        sum(1 for c in p2 if c["result"] == "ok"),
+                        statistics.median(lags) if lags else None,
+                        statistics.median(peers) if peers else None)
+                self._con.execute(
+                    "insert into daily_stats(runner_id, day, probes_total, probes_ok, in_sync,"
+                    " p2p_total, p2p_ok, median_lag, median_peers) values(?,?,?,?,?,?,?,?,?)"
+                    " on conflict(runner_id, day) do update set probes_total=excluded.probes_total,"
+                    " probes_ok=excluded.probes_ok, in_sync=excluded.in_sync,"
+                    " p2p_total=excluded.p2p_total, p2p_ok=excluded.p2p_ok,"
+                    " median_lag=excluded.median_lag, median_peers=excluded.median_peers",
+                    (rid, day) + vals)
+            return len(ids)
+
+    def daily_stats(self, runner_id, from_day, to_day):
+        rows = self._all("select * from daily_stats where runner_id=? and day>=? and day<=?"
+                         " order by day", (runner_id, from_day, to_day))
+        for r in rows:
+            r["median_lag"] = _whole(r["median_lag"])
+            r["median_peers"] = _whole(r["median_peers"])
+        return rows
+
+    def set_daily_score(self, runner_id, day, score):
+        with self._lock:
+            self._con.execute(
+                "insert into daily_stats(runner_id, day, probes_total, probes_ok, in_sync,"
+                " p2p_total, p2p_ok, score) values(?,?,0,0,0,0,0,?)"
+                " on conflict(runner_id, day) do update set score=excluded.score",
+                (runner_id, day, score))
+
+    def prune(self, now, keep_days) -> int:
+        cutoff = now - keep_days * 86400
+        with self._lock:
+            n = self._con.execute("delete from probes where ts<?", (cutoff,)).rowcount
+            n += self._con.execute("delete from p2p_checks where ts<?", (cutoff,)).rowcount
+            return n
+
+    # ---- meta / epochs ----
+    def get_meta(self, key, default=None):
+        r = self._one("select value from meta where key=?", (key,))
+        return default if r is None else r["value"]
+
+    def set_meta(self, key, value):
+        with self._lock:
+            self._con.execute("insert or replace into meta(key, value) values(?,?)",
+                              (key, str(value)))
+
+    def save_epoch(self, epoch, *, start, end, merkle_root, data_hex, summary):
+        with self._lock:
+            self._con.execute(
+                'insert into epochs(epoch, start, "end", merkle_root, data_hex, summary_json)'
+                ' values(?,?,?,?,?,?) on conflict(epoch) do update set start=excluded.start,'
+                ' "end"=excluded."end", merkle_root=excluded.merkle_root,'
+                ' data_hex=excluded.data_hex, summary_json=excluded.summary_json',
+                (epoch, start, end, merkle_root, data_hex,
+                 json.dumps(summary, sort_keys=True)))
+
+    def set_epoch_tx(self, epoch, tx_hash):
+        with self._lock:
+            self._con.execute("update epochs set stat_cell_tx=? where epoch=?", (tx_hash, epoch))
+
+    @staticmethod
+    def _epoch(r):
+        if r is None:
+            return None
+        return {"epoch": r["epoch"], "start": r["start"], "end": r["end"],
+                "merkle_root": r["merkle_root"], "data_hex": r["data_hex"],
+                "stat_cell_tx": r["stat_cell_tx"], "summary": json.loads(r["summary_json"])}
+
+    def get_epoch(self, epoch):
+        return self._epoch(self._one("select * from epochs where epoch=?", (epoch,)))
+
+    def list_epochs(self):
+        return [self._epoch(r) for r in self._all("select * from epochs order by epoch")]

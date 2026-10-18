@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csr-network-monitor"
+version = "0.1.0"
+description = "Challenges CKB Service Runners, scores and ranks them, publishes the results"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+csrmon = "csrmon.cli:main"
+
+[tool.setuptools]
+packages = ["csrmon"]
+
+[tool.setuptools.package-data]
+csrmon = ["web/*"]

@@ -1,0 +1,21 @@
+monitor.example.org {
+	encode gzip
+
+	# one process per network
+	handle /v1/testnet/* {
+		reverse_proxy 127.0.0.1:8480
+	}
+	handle /v1/mainnet/* {
+		reverse_proxy 127.0.0.1:8481
+	}
+	# monitor info, the web page and its assets come from the testnet instance
+	handle /v1/monitor {
+		reverse_proxy 127.0.0.1:8480
+	}
+	handle /static/* {
+		reverse_proxy 127.0.0.1:8480
+	}
+	handle / {
+		reverse_proxy 127.0.0.1:8480
+	}
+}

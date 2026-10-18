@@ -1,0 +1,137 @@
+"""Metrics, score_v1, ranking and network summary (all from daily_stats)."""
+import statistics
+
+from .store import add_days, day_of, day_start
+
+SCORE_FORMULA = "score_v1"
+WEIGHTS = {"a30": 0.40, "a365": 0.15, "s30": 0.15, "f30": 0.15, "t": 0.10, "p": 0.05}
+_BAD_FLAGS = ("identity_mismatch", "bad_binding")
+
+
+def _days_between(a, b) -> int:
+    return (day_start(b) - day_start(a)) // 86400
+
+
+def _ratio(a, b) -> float:
+    return a / b if b else 0.0
+
+
+def runner_metrics(store, runner_id, today, provisional_days=7, runner=None) -> dict:
+    if runner is None:
+        runner = store.get_runner(runner_id)
+    rows = store.daily_stats(runner_id, add_days(today, -364), today)
+    cut30 = add_days(today, -29)
+    cut7 = add_days(today, -6)
+    r30 = [r for r in rows if r["day"] >= cut30]
+    r7 = [r for r in rows if r["day"] >= cut7]
+
+    def acc(rs):
+        return _ratio(sum(r["probes_ok"] for r in rs), sum(r["probes_total"] for r in rs))
+
+    a7, a30, a365 = acc(r7), acc(r30), acc(rows)
+    s30 = _ratio(sum(r["in_sync"] for r in r30), sum(r["probes_ok"] for r in r30))
+    f30 = _ratio(sum(r["p2p_ok"] for r in r30), sum(r["p2p_total"] for r in r30))
+    age_days = max(0, _days_between(day_of(runner["first_seen"]), today))
+    t = min(1.0, age_days / 365)
+    peers = [r["median_peers"] for r in r30 if r["median_peers"] is not None]
+    p = min(1.0, statistics.median(peers) / 8) if peers else 0.0
+    lags = [r["median_lag"] for r in r30 if r["median_lag"] is not None]
+    m = {"a7": a7, "a30": a30, "a365": a365, "s30": s30, "f30": f30, "t": t, "p": p,
+         "median_lag_30": statistics.median(lags) if lags else None,
+         "age_days": age_days, "provisional": age_days < provisional_days}
+    if any(f in runner["flags"] for f in _BAD_FLAGS):
+        m["score"] = 0.0
+    else:
+        m["score"] = round(100 * sum(w * m[k] for k, w in WEIGHTS.items()), 2)
+    return m
+
+
+def rank_runners(store, today, provisional_days=7) -> list:
+    items = []
+    for r in store.list_runners(("active",)):
+        m = runner_metrics(store, r["runner_id"], today, provisional_days, runner=r)
+        m.update(runner_id=r["runner_id"], rank=None, status=r["status"], flags=list(r["flags"]),
+                 country=r["country"], region=r["region"], asn=r["asn"],
+                 first_seen=r["first_seen"])
+        items.append(m)
+    ranked = [i for i in items
+              if not i["provisional"] and not any(f in i["flags"] for f in _BAD_FLAGS)]
+    ranked.sort(key=lambda i: (-i["score"], i["first_seen"], i["runner_id"]))
+    for n, i in enumerate(ranked, 1):
+        i["rank"] = n
+    unranked = [i for i in items if i["rank"] is None]
+    unranked.sort(key=lambda i: (-i["score"], i["runner_id"]))
+    asn_count = {}
+    for i in ranked:
+        if i["asn"]:
+            asn_count[i["asn"]] = asn_count.get(i["asn"], 0) + 1
+    out = ranked + unranked
+    for i in out:
+        if not i["asn"]:
+            i["asn_peers"] = 0
+        else:
+            i["asn_peers"] = asn_count.get(i["asn"], 0) - (1 if i["rank"] is not None else 0)
+    return out
+
+
+def update_scores(store, today, provisional_days=7) -> list:
+    ranking = rank_runners(store, today, provisional_days)
+    for i in ranking:
+        store.set_daily_score(i["runner_id"], today, i["score"])
+    return ranking
+
+
+def diversity_index(counts: dict) -> float:
+    total = sum(counts.values())
+    if not total:
+        return 0.0
+    return round(1 - sum((c / total) ** 2 for c in counts.values()), 4)
+
+
+def _count(items, key, default):
+    out = {}
+    for i in items:
+        k = i[key]
+        k = default if k is None or k == "" else str(k)
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def _largest_share(counts) -> float:
+    total = sum(counts.values())
+    return round(max(counts.values()) / total, 4) if total else 0.0
+
+
+def network_summary(store, today, config, ranking=None) -> dict:
+    if ranking is None:
+        ranking = rank_runners(store, today, config.provisional_days)
+    ranked = [i for i in ranking if i["rank"] is not None]
+    provisional = sum(1 for i in ranking if i["provisional"])
+    excluded = sum(1 for i in ranking if i["rank"] is None and not i["provisional"])
+    by_country = _count(ranked, "country", "??")
+    by_region = _count(ranked, "region", "??")
+    by_asn = _count(ranked, "asn", "0")
+    asn_share = _largest_share(by_asn)
+    country_share = _largest_share(by_country)
+    start = store.get_meta("monitor_start")
+    history_days = max(0, _days_between(day_of(int(float(start))), today)) if start else 0
+    n = len(ranked)
+    g_days, g_runners = config.gate_min_days, config.gate_min_runners
+    met = (n > 0 and history_days >= g_days and n >= g_runners
+           and asn_share <= config.gate_max_asn_share
+           and country_share <= config.gate_max_country_share)
+    progress = round(min(1, history_days / g_days, n / g_runners), 4)
+    return {
+        "network": config.network, "date": today, "score_formula": SCORE_FORMULA,
+        "runner_count": n, "provisional_count": provisional, "excluded_count": excluded,
+        "by_country": by_country, "by_region": by_region, "by_asn": by_asn,
+        "largest_asn_share": asn_share, "largest_country_share": country_share,
+        "diversity_index": diversity_index(by_asn),
+        "country_diversity_index": diversity_index(by_country),
+        "gate": {"history_days": history_days, "min_days": g_days, "runners": n,
+                 "min_runners": g_runners, "largest_asn_share": asn_share,
+                 "max_asn_share": config.gate_max_asn_share,
+                 "largest_country_share": country_share,
+                 "max_country_share": config.gate_max_country_share,
+                 "met": met, "progress": progress},
+    }

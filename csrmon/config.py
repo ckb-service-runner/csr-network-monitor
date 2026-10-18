@@ -1,0 +1,151 @@
+"""TOML configuration."""
+import tomllib
+from dataclasses import dataclass, field, fields
+from urllib.parse import urlparse
+
+
+class ConfigError(Exception):
+    pass
+
+
+@dataclass
+class Config:
+    network: str
+    public_url: str
+    db_path: str
+    key_path: str
+    node_rpc: str = "http://127.0.0.1:8114"
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 8480
+    salt_path: str = ""
+    probe_interval_s: int = 600
+    probe_jitter_s: int = 60
+    probe_timeout_s: float = 5
+    probe_workers: int = 32
+    sync_threshold: int = 10
+    second_tip_source: str = ""
+    crosscheck_interval_s: int = 600
+    aggregate_interval_s: int = 600
+    registration_code_hash: str = ""
+    registration_hash_type: str = "type"
+    registration_args: str = "0x"
+    allow_insecure_endpoints: bool = False
+    geo_country_csv: str = ""
+    geo_asn_csv: str = ""
+    p2p_check_cmd: str = ""
+    p2p_check_timeout_s: int = 120
+    p2p_interval_s: int = 86400
+    rate_limit_per_min: int = 60
+    trusted_proxies: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
+    gate_min_days: int = 365
+    gate_min_runners: int = 60
+    gate_max_asn_share: float = 0.25
+    gate_max_country_share: float = 0.5
+    provisional_days: int = 7
+    probe_retention_days: int = 90
+    stat_cell_enabled: bool = False
+    stat_cell_capacity_ckb: int = 400
+    stat_cell_fee_shannons: int = 100000
+    stat_cell_acp_code_hash: str = ""
+    stat_cell_acp_hash_type: str = "type"
+    stat_cell_acp_dep_tx: str = ""
+    stat_cell_acp_dep_index: int = 0
+    stat_cell_acp_dep_type: str = "dep_group"
+    stat_cell_sighash_code_hash: str = (
+        "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8")
+    stat_cell_sighash_hash_type: str = "type"
+    stat_cell_sighash_dep_tx: str = ""
+    stat_cell_sighash_dep_index: int = 0
+
+
+_REQUIRED = {"network", "public_url", "db_path", "key_path"}
+_NONEMPTY = _REQUIRED
+# minimum allowed value (inclusive) for numeric keys
+_MIN = {
+    "listen_port": 0, "probe_interval_s": 1, "probe_jitter_s": 0,
+    "probe_workers": 1, "sync_threshold": 0, "crosscheck_interval_s": 1,
+    "aggregate_interval_s": 1, "p2p_check_timeout_s": 1, "p2p_interval_s": 1,
+    "rate_limit_per_min": 1, "gate_min_days": 1, "gate_min_runners": 1,
+    "provisional_days": 0, "probe_retention_days": 1,
+}
+_HASH_TYPES = ("type", "data", "data1", "data2")
+
+
+def _check_type(name, value, default):
+    if isinstance(default, bool):
+        ok = isinstance(value, bool)
+    elif name == "probe_timeout_s":
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+    elif isinstance(default, float):
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+    elif isinstance(default, int):
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif isinstance(default, str):
+        ok = isinstance(value, str)
+    elif isinstance(default, list):
+        ok = isinstance(value, list) and all(isinstance(v, str) for v in value)
+    else:
+        ok = True
+    if not ok:
+        raise ConfigError(f"wrong type for {name!r}")
+
+
+def load_config(path) -> Config:
+    try:
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+    except OSError as e:
+        raise ConfigError(f"cannot read config {path}: {e}") from e
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"invalid TOML in {path}: {e}") from e
+
+    known = {f.name: f for f in fields(Config)}
+    for k in raw:
+        if k not in known:
+            raise ConfigError(f"unknown config key {k!r}")
+    for k in _REQUIRED:
+        if k not in raw:
+            raise ConfigError(f"missing required key {k!r}")
+
+    defaults = Config("", "", "", "")
+    for k, v in raw.items():
+        _check_type(k, v, getattr(defaults, k))
+        if k in _NONEMPTY and not v:
+            raise ConfigError(f"{k!r} must not be empty")
+        if k in _MIN and v < _MIN[k]:
+            raise ConfigError(f"{k!r} must be >= {_MIN[k]}")
+    if "probe_timeout_s" in raw and raw["probe_timeout_s"] <= 0:
+        raise ConfigError("'probe_timeout_s' must be > 0")
+    if "listen_port" in raw and raw["listen_port"] > 65535:
+        raise ConfigError("'listen_port' must be <= 65535")
+
+    cfg = Config(**raw)
+    if cfg.network not in ("testnet", "mainnet"):
+        raise ConfigError("'network' must be 'testnet' or 'mainnet'")
+    for k in ("registration_hash_type", "stat_cell_acp_hash_type",
+              "stat_cell_sighash_hash_type"):
+        if getattr(cfg, k) not in _HASH_TYPES:
+            raise ConfigError(f"{k!r} must be one of {_HASH_TYPES}")
+    if cfg.stat_cell_acp_dep_type not in ("code", "dep_group"):
+        raise ConfigError("'stat_cell_acp_dep_type' must be 'code' or 'dep_group'")
+    for k in ("gate_max_asn_share", "gate_max_country_share"):
+        if not 0 <= getattr(cfg, k) <= 1:
+            raise ConfigError(f"{k!r} must be between 0 and 1")
+
+    try:
+        u = urlparse(cfg.node_rpc)
+        host = u.hostname
+    except ValueError as e:
+        raise ConfigError("invalid 'node_rpc'") from e
+    if u.scheme != "http" or host not in ("127.0.0.1", "localhost", "::1"):
+        raise ConfigError("'node_rpc' must be an http:// URL on 127.0.0.1, localhost or ::1")
+
+    if cfg.stat_cell_enabled:
+        for k in ("stat_cell_acp_code_hash", "stat_cell_acp_dep_tx",
+                  "stat_cell_sighash_dep_tx"):
+            if not getattr(cfg, k):
+                raise ConfigError(f"{k!r} is required when stat_cell_enabled")
+
+    if not cfg.salt_path:
+        cfg.salt_path = cfg.db_path + ".salt"
+    return cfg
