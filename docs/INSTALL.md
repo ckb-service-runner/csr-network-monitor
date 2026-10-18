@@ -33,9 +33,29 @@ journalctl -u csr-network-monitor@testnet -f
 
 The instance name selects `/etc/csr-network-monitor/monitor-<name>.toml`. Run `@mainnet` the same way (port 8481).
 
-## Caddy
+## Hostnames and Caddy
 
-Copy `deploy/Caddyfile.example` to `/etc/caddy/Caddyfile`, set your host name and reload. It routes `/v1/testnet/*` to 127.0.0.1:8480, `/v1/mainnet/*` to 127.0.0.1:8481 and `/v1/monitor`, `/`, `/static/*` to the testnet instance. Caddy is a trusted proxy (`trusted_proxies`), the monitor then reads the client IP from `X-Forwarded-For`.
+There is **one hostname per network**, because CSR's endpoints carry no network in the path. The testnet monitor is `monitor-testnet.vericell.net` (instance `@testnet`, port 8480); mainnet gets its own host (port 8481). Copy `deploy/Caddyfile.example` to `/etc/caddy/Caddyfile`, set your domain and reload: Caddy proxies the whole host (API, web page, `/v1/checkin`, `/v1/answer`, `/v1/attest`) to the instance. Caddy is a trusted proxy (`trusted_proxies`), the monitor then reads the client IP from `X-Forwarded-For`.
+
+CSR nodes in inbound mode must be reachable on their **ping port 8131** (`POST /v1/challenge`); the monitor finds them through the P2P peers of its CKB node (`get_peers`). Nodes behind NAT use outbound mode and check in at the monitor's hostname.
+
+## CSR contracts and config cell
+
+The config cell belongs to the monitor. Deploy CSR's contracts with the monitor key so the cell's lock is the monitor's sighash lock:
+
+```sh
+csr-dev deploy-contracts   # run with the monitor key (see CSR's documentation)
+```
+
+Take the values from CSR's `deployments/testnet.json` and set them in the monitor config:
+
+- `config_type_args` – Type ID args of the config cell
+- `csr_registry_code_hash` – data2 hash of the `csr-registry` contract
+- `stat_cell_sighash_dep_tx` – dep group tx of the secp256k1 sighash lock (needed to sign the clock updates)
+
+Testnet values: `config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"`, `csr_registry_code_hash = "0x47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"`, `stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"`.
+
+**Fund the config cell**: it must hold enough capacity for the cell itself plus the fee of every clock update (`clock_update_fee_shannons`, taken from its capacity, every `clock_update_interval_s`). Also fund the monitor address (`keygen` prints the `blake160`) if you use the stat cell. The monitor then keeps `clock_ms` current, scans registry cells and issues attestations.
 
 ## Geolocation
 
@@ -136,4 +156,4 @@ table inet csrmark {
 
 The services (Caddy on 443, the CKB node on 8115) simply listen on all addresses; connections from the Internet arrive with the runner's real source IP and the reply goes back via `ip rule fwmark 0x77`. Set `rp_filter` to loose (`net.ipv4.conf.wg0.rp_filter=2`, `net.ipv4.conf.all.rp_filter=2`) so that packets with Internet source addresses are accepted from `wg0`.
 
-Check: `curl https://monitor.example.org/v1/monitor` from outside, and look at `ss -tn` on the monitor host: peers must show real client addresses, not `10.77.0.1`.
+Check: `curl https://monitor-testnet.vericell.net/v1/monitor` from outside, and look at `ss -tn` on the monitor host: peers must show real client addresses, not `10.77.0.1`.

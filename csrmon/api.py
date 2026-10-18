@@ -10,7 +10,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import scoring
+from . import configcell, scoring
 from . import __version__
 from .store import add_days, day_of, day_start
 
@@ -206,7 +206,10 @@ class Api:
                 "score_formula": scoring.SCORE_FORMULA, "network": self.config.network,
                 "public_url": self.config.public_url, "tip": tip,
                 "paused": bool(getattr(self.prober, "paused", False)),
-                "stat_cell_type_hash": self.store.get_meta("stat_cell_type_hash")}
+                "stat_cell_type_hash": self.store.get_meta("stat_cell_type_hash"),
+                "csr_config_type_hash": (configcell.config_type_hash(self.config.config_type_args)
+                                         if self.config.config_type_args else None),
+                "csr_registry_code_hash": self.config.csr_registry_code_hash or None}
 
     def _runners(self, query, today):
         limit = 50

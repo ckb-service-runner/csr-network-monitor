@@ -1,93 +1,91 @@
-# CSR wire protocol (v1)
+# CSR wire protocol (monitor side)
 
-This is the contract between the CSR Network Monitor and a CSR (CKB Service Runner) implementation.
+**CSR (CKB Service Runner, `psawyerberlin/ckb-service-runner`) is the source of truth.** The monitor speaks the protocols defined there:
+
+- `spec/ping-protocol.md` – ping protocol v1 (challenge, binding, answer, check-in)
+- `spec/registry.md` – registry cell, attestation, config cell
+- `spec/monitor-public-api.md` – `GET /v1/network`, `GET /v1/nodes/{peer_id}`
+
+This file summarises what the monitor implements; on any difference the CSR specs win.
 
 ## Primitives
 
-- **Hash**: `ckb_blake2b(x)` = BLAKE2b-256 with personalization `b"ckb-default-hash"` (the `ckb-default-hash` of CKB). `blake160(x)` is its first 20 bytes.
-- **Hex**: `"0x"` + lowercase hex. Integers in binary structures are little-endian.
-- **Signature**: secp256k1, 65 bytes `r(32) ‖ s(32) ‖ recid(1)`, always over a 32-byte digest, deterministic nonce (RFC 6979, HMAC-SHA256), low-s (`s ≤ n/2`). Verifiers reject high-s.
-- **canonical JSON** (also called canonical form): `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")`.
-- **runner_id** = `"0x" + hex(ckb_blake2b(service_pubkey))` (33-byte compressed key).
-- **peer_id** = base58(`0x12 0x20 ‖ sha256(p2p_pubkey)`), starts with `Qm`.
-- **slot** = `int(ts // probe_interval_s)`; time is Unix seconds (UTC).
+- **Ping signature**: message → `SHA-256(UTF-8)` → ECDSA secp256k1, 64-byte compact `r ‖ s`, as `0x` + 128 hex. Signers use RFC 6979 and low-S; verifiers normalise S (accept high-S).
+- **Hash `ckb_blake2b`**: BLAKE2b-256 with personalization `ckb-default-hash`. `blake160` is its first 20 bytes. Used for attestations, runner ids and the stat cell.
+- **Attestation / epoch signature**: 65 bytes `r ‖ s ‖ recid`, low-S, over a 32-byte digest.
+- Hex is `"0x"` + lowercase; binary integers are little-endian; times are Unix seconds UTC.
+- **runner_id** = `ckb_blake2b(service_pubkey)`; the `peer_id` (CKB node id, `Qm…`) is stored with the runner.
 
-## Domain separators
+## Messages
 
-ASCII strings prefixed to signed data: `CSR/v1/challenge`, `CSR/v1/probe`, `CSR/v1/bind`, `CSR/v1/checkin`, `CSR/v1/epoch`.
+Fields are joined with `\n`, no trailing newline, numbers in decimal.
 
-## Challenge (monitor → runner)
+- `CSR-PING-CHALLENGE-v1\n{nonce}\n{height}\n{issued_at}` – signed by the monitor.
+- `CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}` – signed by the P2P/node key (binding_sig); proves the service key belongs to the node id.
+- `CSR-PING-ANSWER-v1\n` + the 13 answer fields in order: `nonce, peer_id, service_pubkey, binding_sig, network, csr_version, node_version, r2_state, tip_number, tip_hash, block_hash_at_height, uptime_s, ping_mode` – signed by the service key.
+- `CSR-ATTEST-v1`: attestation digest = `ckb_blake2b("CSR-ATTEST-v1" ‖ molecule(AttestationBody{peer_id, service_pubkey, network, expiry_ms}))`.
 
-```json
-{"v":1,"network":"testnet","nonce":"0x…32 bytes","issued_at":1760000000,
- "monitor_tip":123456,"block_height":123400,"monitor_sig":"0x…65 bytes"}
-```
+## Routes
 
-`monitor_sig` signs `ckb_blake2b("CSR/v1/challenge" ‖ canonical_json(challenge without monitor_sig))`. The monitor public key is published at `GET /v1/monitor`. A runner should verify the signature and that `network` is its own.
+### `POST /v1/challenge` (on the CSR node, port 8131)
 
-## Response (runner → monitor)
+Inbound mode. The monitor sends `{"nonce","height","issued_at","monitor_sig"}` (exactly these fields) and receives `{"answer": {13 fields}, "sig"}` (`tip_number`, `uptime_s` are numbers, the rest strings). The node answers 400 (bad nonce / not fresh, `|now − issued_at| > 60 s` / `height` above its tip), 403 (bad monitor signature), 409 (nonce replay), 429 (rate limit 10/min/IP), 503 (node data unavailable).
 
-```json
-{"v":1,"nonce":"0x…same nonce","peer_id":"Qm…","tip_number":123455,"tip_hash":"0x…",
- "block_hash":"0x…hash of block_height","ibd":false,"peers_out":8,
- "csr_version":"0.1.0","ckb_version":"0.203.0","sig":"0x…"}
-```
+The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync.
 
-`block_hash` is the hash of the block at the challenge's `block_height`, `tip_*` describe the runner's own CKB node. The service key signs
-`ckb_blake2b("CSR/v1/probe" ‖ ckb_blake2b(canonical_json(challenge)) ‖ ckb_blake2b(canonical_json(response without sig)))`.
+### `POST /v1/checkin` and `POST /v1/answer` (on the monitor, outbound mode)
 
-The monitor marks a probe `fail` for: `bad_format`, `late` (slower than `probe_timeout_s`), `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip` (tip hash unknown or tip ahead of the monitor by more than `sync_threshold`), plus transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`. A correct answer more than `sync_threshold` blocks behind (or with `ibd` true) is *answered* but *not in sync*.
+For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig","network","csr_version"}`.
 
-## Pull mode: `POST /csr/v1/probe`
-
-The monitor posts the challenge (canonical JSON, `Content-Type: application/json`) to `<endpoint>/csr/v1/probe` and expects `200` with the response JSON. Any other status counts as `bad_status`.
-
-## Push mode (runner behind NAT)
-
-1. `POST /v1/{network}/checkin` with `{"v":1,"runner_id":"0x…","ts":<unix>,"sig":"0x…"}`.
-   `sig` signs `ckb_blake2b("CSR/v1/checkin" ‖ network_ascii ‖ runner_id_bytes(32) ‖ ts as u64 LE)`.
-2. On `200` the body is `{"challenge": {…}, "deadline_s": <probe_timeout_s>}`.
-3. `POST /v1/{network}/checkin/response` with `{"runner_id":"0x…","response":{…}}` before the deadline.
-   `200` returns `{"result":"ok"|"fail","failure_reason":…,"lag":…,"in_sync":…}`.
-
-Status codes:
-
-| Endpoint | Status | Body `error` | Meaning |
+| Route | Status | Body | Meaning |
 |---|---|---|---|
-| checkin | 200 | – | challenge issued |
-| checkin | 400 | `bad_request`, `stale_timestamp` | malformed body; `ts` more than 120 s from the monitor clock |
-| checkin | 401 | `bad_signature` | signature invalid |
-| checkin | 404 | `unknown_runner` | not registered / not active |
-| checkin | 413 | `too_large` | body above 16384 bytes |
-| checkin | 429 | `slot_done`, `challenge_open`, `rate_limited` | the slot already has an outcome; a challenge is already open; too many requests |
-| checkin | 503 | `monitor_paused`, `unavailable` | monitor paused (tip cross-check) or push unavailable |
-| response | 200 | – | evaluated; see `result` |
-| response | 400 | `bad_request` | malformed body |
-| response | 409 | `no_open_challenge` | no check-in pending (or it expired: recorded as `no_response`) |
-| response | 413 | `too_large` | body too large |
+| checkin | 200 | `{"challenge": {...}}` | challenge issued |
+| checkin | 400 | `bad_request`, `wrong_network` | malformed body / other network |
+| checkin | 401 | `bad_signature` | binding signature invalid |
+| checkin | 413 | `too_large` | body too large |
+| checkin | 429 | `slot_done`, `challenge_open`, `rate_limited` | the slot already has an outcome / a challenge is open / too many requests |
+| checkin | 503 | `monitor_paused`, `unavailable` | tip cross-check failed / not available |
+| answer | 200 | `{"result":"ok"}` | accepted (CSR treats HTTP 200 as accepted) |
+| answer | 400 | `bad_request` | malformed |
+| answer | 409 | `unknown_nonce` | no open challenge for this nonce |
+| answer | 413 | `too_large` | body too large |
+| answer | 422 | `{"result":"fail","failure_reason":…}` | answer evaluated as failed |
 
-At most one outcome is recorded per runner per slot, so extra check-ins do not raise availability.
+A correct answer creates the runner (mode `outbound`).
 
-## Registration cell (v1)
+### `POST /v1/attest`
 
-The registration cell is created on chain by the operator.
+Body `{"peer_id","service_pubkey","binding_sig","network"}`; reply is CSR's attestation file `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature","monitor_pubkey"}` (input of `csr register prepare`).
 
-Cell data (type script configurable by the monitor):
-
-| Offset | Size | Field |
+| Status | Body | Meaning |
 |---|---|---|
-| 0 | 1 | version = 1 |
-| 1 | 1 | network: 0 testnet, 1 mainnet |
-| 2 | 1 | mode: 0 pull, 1 push |
-| 3 | 1 | flags: bit 0 = "Join the node ranking" (other bits must be 0) |
-| 4 | 33 | service public key |
-| 37 | 33 | P2P public key |
-| 70 | 65 | bind signature |
-| 135 | 2 | p2p_port (LE) |
-| 137 | 2 | endpoint length n (LE) |
-| 139 | n | endpoint URL, UTF-8 (pull: required; push: empty) |
+| 200 | attestation | issued (or cached) |
+| 400 | `bad_request`, `wrong_network` | malformed / other network |
+| 401 | `bad_signature` | binding invalid |
+| 403 | `not_eligible` | see policy below |
+| 413 | `too_large` | body too large |
+| 429 | `rate_limited` | too many requests |
+| 503 | `chain_unavailable`, `unavailable` | config cell clock unreadable / attestations not configured |
 
-The bind signature is made with the P2P key over `ckb_blake2b("CSR/v1/bind" ‖ service_pubkey ‖ network_ascii)`. Cells with a wrong bind signature, wrong network or a malformed layout are ignored. An unset opt-in flag hides the runner and stops probing.
+### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
+
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); status 404 `not_ranked` for nodes that are unknown or still provisional. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
+
+## Discovery
+
+- **Inbound nodes** publish no address on chain. Every `discovery_interval_s` the monitor reads `get_peers` of its own CKB node (`node_id` and multiaddrs) and sends `POST http://<peer ip>:8131/v1/challenge` to peers that are not yet runners, with a back-off (`discovery_backoff_s`) for peers that did not answer. A correct answer creates a runner (mode `inbound`), challenged once per slot afterwards.
+- **Outbound nodes** check in; a correct answer creates the runner (mode `outbound`).
+- **`p2p_verified` vs `challenge_only`**: a probe is `p2p_verified` when the answering `peer_id` is a node ID the monitor's CKB node is connected to (for discovery: the peer that was probed). A node is reported as `p2p_verified` if any successful probe of the last 24 h was P2P-verified, else `challenge_only`.
+
+## Slots and the grace rule
+
+slot = `int(ts // probe_interval_s)`. At most one outcome is recorded per runner per slot. Inbound runners are challenged once per slot. Outbound runners must check in during the slot; a check-in in the first half of the next slot still counts for the previous slot (grace), after that the slot is closed as `fail` (`no_checkin`). Slots during which probing is paused are `excluded`, never misses. Slots before the monitor started or before the runner was first seen are not counted.
+
+## Registry, config cell and attestations
+
+- The monitor owns the **config cell** (Type ID; lock = the monitor key's secp256k1 sighash lock). Data = `monitor_pubkey (33) ‖ clock_ms (u64 LE) ‖ 8 reserved bytes`. Every `clock_update_interval_s` the monitor spends it into the same lock/type with `clock_ms` = timestamp of the chain tip; the fee is taken from the cell capacity.
+- **Registry cell** (`csr-registry`): type script `{code_hash: csr_registry_code_hash, hash_type: "data2", args: config cell type hash}`. Data (molecule) `Registry {peer_id, service_pubkey, float_lock_hash, network, attestation, prekeys}`, `Attestation {peer_id, service_pubkey, network, expiry_ms, signature[65]}`; network ids mainnet 0, testnet 1, devnet 2. The monitor scans these cells every `probe_interval_s` and keeps those whose network matches and whose attestation was signed by this monitor and matches the cell.
+- **Attestation policy** (`POST /v1/attest`): the binding signature must verify, the network must be the monitor's, and the node must be an active runner with that `peer_id` and at least `attest_min_ok_24h` (default 1) successful probes in the last 24 h; otherwise `403 not_eligible`. Validity = config cell `clock_ms` + `attest_validity_days` (default 7 days). The same attestation is returned from a cache for `attest_cache_s` (default 3600 s).
 
 ## Epoch data and leaves
 

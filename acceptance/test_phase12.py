@@ -1,4 +1,5 @@
-"""Phase 12 acceptance: CLI, daemon wiring, packaging and documentation, end to end."""
+"""Phase 12 acceptance (v2 version): CLI, packaging, documentation of the CSR-aligned monitor.
+The v1 end-to-end test is replaced by test_v2_daemon.py."""
 import json
 import os
 import re
@@ -128,133 +129,27 @@ def test_service_unit_and_docker():
     assert re.search(r"^FROM python:3\.1[1-9]", docker, re.M)
     assert "csrmon" in docker and "run" in docker
     caddy = read("deploy/Caddyfile.example")
-    assert "reverse_proxy" in caddy and "/v1/testnet" in caddy and "/v1/mainnet" in caddy
+    assert "reverse_proxy" in caddy and "monitor-testnet." in caddy
+    assert "127.0.0.1:8480" in caddy and "127.0.0.1:8481" in caddy
 
 
 def test_docs():
     proto = read("docs/PROTOCOL.md")
-    for s in ("CSR/v1/challenge", "CSR/v1/probe", "CSR/v1/bind", "CSR/v1/checkin", "CSR/v1/epoch",
-              "/csr/v1/probe", "/v1/{network}/checkin", "/v1/{network}/checkin/response",
-              "ckb-default-hash", "registration", "canonical"):
+    for s in ("CSR-PING-CHALLENGE-v1", "CSR-BINDING-v1", "CSR-PING-ANSWER-v1", "CSR-ATTEST-v1",
+              "CSR/v1/epoch", "ckb-service-runner", "spec/ping-protocol.md", "spec/registry.md",
+              "spec/monitor-public-api.md", "/v1/challenge", "/v1/checkin", "/v1/answer", "/v1/attest",
+              "/v1/network", "/v1/nodes/", "ckb-default-hash", "8131", "get_peers", "p2p_verified",
+              "clock_ms", "not_eligible"):
         assert s in proto, s
+    for gone in ("/csr/v1/probe", "/v1/{network}/checkin", "CSR/v1/challenge"):
+        assert gone not in proto, gone
     install = read("docs/INSTALL.md").lower()
     for s in ("wireguard", "nftables", "dnat", "snat", "fwmark", "systemd", "keygen", "geolite2",
-              "db-ip"):
+              "db-ip", "monitor-testnet.vericell.net", "config_type_args", "csr_registry_code_hash",
+              "csr-dev deploy-contracts", "8131"):
         assert s in install, s
     helper = read("docs/P2P_HELPER.md")
     for s in ("peer_id_seen", "heights", "served", "latency_ms", "timeout_s", "address"):
         assert s in helper, s
     readme = read("README.md").lower()
     assert "pytest" in readme and "csrmon" in readme and "reputation source" in readme
-
-
-# ---------- end to end ----------
-
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-def http(method, url, obj=None, timeout=5):
-    data = json.dumps(obj).encode() if obj is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read() or b"null")
-
-
-def wait_for(fn, timeout, step=0.3):
-    end = time.time() + timeout
-    last = None
-    while time.time() < end:
-        try:
-            last = fn()
-            if last:
-                return last
-        except Exception as e:      # noqa: BLE001
-            last = e
-        time.sleep(step)
-    raise AssertionError(f"timed out, last={last!r}")
-
-
-def test_end_to_end(tmp_path):
-    fc = FakeChain(tip=90_000)
-    runner = FakeRunner(sk(1), sk(101), fc)
-    runner.__enter__()
-    c_pull, reg_pull = make_registration_cell(sk(1), sk(101), endpoint=runner.url, tx_byte=1)
-    c_push, reg_push = make_registration_cell(sk(2), sk(102), mode="push", endpoint="",
-                                              p2p_port=0, tx_byte=2)
-    fc.cells = [c_pull, c_push]
-    rpc = FakeRpcServer(fc)
-    rpc.__enter__()
-    rpc_open = [True]
-    port = free_port()
-    cfg = write_cfg(tmp_path, node_rpc=f'"{rpc.url}"', listen_port=port, probe_interval_s=3,
-                    probe_jitter_s=0, probe_timeout_s=2, aggregate_interval_s=1,
-                    registration_code_hash=f'"{REG_CODE_HASH}"', allow_insecure_endpoints="true")
-    proc = subprocess.Popen([sys.executable, "-m", "csrmon", "run", "--config", cfg], cwd=ROOT,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    base = f"http://127.0.0.1:{port}"
-    try:
-        mon = wait_for(lambda: http("GET", base + "/v1/monitor")[1], 30)
-        assert mon["network"] == "testnet" and mon["tip"]["number"] == 90_000
-
-        def pull_ok():
-            s, d = http("GET", f"{base}/v1/testnet/runners/{reg_pull.runner_id}")
-            return s == 200 and d["last_probe"] and d["last_probe"]["result"] == "ok" and d
-        wait_for(pull_ok, 40)
-        assert any(path == "/csr/v1/probe" for path, _ in runner.received)
-
-        def push_ok():
-            s, body = http("POST", base + "/v1/testnet/checkin",
-                           protocol.make_checkin(sk(2), "testnet", int(time.time())))
-            if s != 200:
-                return False
-            ch = body["challenge"]
-            tip = fc.tip_number - 1
-            resp = protocol.sign_response(
-                sk(2), ch, peer_id=reg_push.peer_id, tip_number=tip, tip_hash=block_hash(tip),
-                block_hash=block_hash(ch["block_height"]), ibd=False, peers_out=8,
-                csr_version="0.1.0", ckb_version="0.203.0")
-            s, res = http("POST", base + "/v1/testnet/checkin/response",
-                          {"runner_id": reg_push.runner_id, "response": resp})
-            return s == 200 and res["result"] == "ok"
-        wait_for(push_ok, 20, step=1)
-
-        def aggregated():
-            s, h = http("GET", f"{base}/v1/testnet/runners/{reg_pull.runner_id}/history?bucket=day")
-            return s == 200 and h["items"] and h["items"][-1]["probes_ok"] >= 1
-        wait_for(aggregated, 30)
-
-        s, summary = http("GET", base + "/v1/testnet/summary")
-        assert s == 200 and summary["provisional_count"] == 2 and summary["runner_count"] == 0
-
-        with urllib.request.urlopen(base + "/", timeout=5) as r:
-            assert r.status == 200 and b'id="ranking"' in r.read()
-
-        # the node goes away: the daemon must keep running and report it
-        rpc.__exit__()
-        rpc_open[0] = False
-        time.sleep(4)
-        assert proc.poll() is None
-        mon = http("GET", base + "/v1/monitor")[1]
-        assert mon["tip"] is None
-    finally:
-        if proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
-        try:
-            code = proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            raise
-        out, err = proc.communicate()
-        runner.__exit__()
-        if rpc_open[0]:
-            rpc.__exit__()
-    assert code == 0, err[-3000:]

@@ -6,11 +6,15 @@ The monitor is a **reputation source, not a proof**: it reports what it observed
 
 Python ≥ 3.11, standard library only at runtime.
 
+## What changed in v2 (CSR alignment)
+
+v2 follows the CKB Service Runner (`psawyerberlin/ckb-service-runner`) as source of truth: CSR ping protocol v1 (secp256k1/SHA-256 text messages, `POST /v1/challenge` on port 8131, outbound `/v1/checkin` + `/v1/answer`), nodes discovered through the CKB node's `get_peers`, `p2p_verified` vs `challenge_only` checks, the CSR-compatible API (`/v1/network`, `/v1/nodes/{peer_id}`), on-chain registry scanning, `POST /v1/attest` attestations and the monitor-owned config cell clock. One hostname per network. Ranking, epochs and the stat cell are unchanged. See [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
 ## Quick start
 
 ```sh
 python3 -m venv venv && venv/bin/pip install .
-cp config/monitor-testnet.toml monitor.toml   # edit paths, public_url, registration_code_hash
+cp config/monitor-testnet.toml monitor.toml   # edit paths, public_url, config_type_args, csr_registry_code_hash
 venv/bin/csrmon check-config --config monitor.toml
 venv/bin/csrmon keygen --config monitor.toml
 venv/bin/csrmon init-db --config monitor.toml
