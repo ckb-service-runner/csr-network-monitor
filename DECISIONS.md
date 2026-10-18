@@ -14,3 +14,10 @@
 - Push responses are recorded with the check-in time as `ts`; a late (but still open) answer is recorded as `late`.
 - `unknown_tip` also applies when the chain cannot return a hash for the runner's tip; a missing expected block hash gives `wrong_block_hash`.
 - Transport errors in pull probes: socket timeouts → `timeout`, everything else → `unreachable`. Exceptions from a probe thread (e.g. local node RPC down) skip that probe instead of recording a miss.
+
+## Phase 8
+- Ranking and summary are computed together and cached per day for 30 s; the runner detail reuses the cached ranking (rank/score/asn_peers).
+- Runner detail 404s `unknown_runner` for non-active runners; history likewise.
+- Non-`/v1/` paths return a plain `404 not_found` JSON until Phase 9 adds the page.
+- A check-in body larger than 16384 bytes is rejected with 413 (the server reads at most 16385 bytes and closes the connection).
+- Non-200 prober replies are passed through as-is with their status.
