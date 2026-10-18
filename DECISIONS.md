@@ -21,3 +21,8 @@
 - Non-`/v1/` paths return a plain `404 not_found` JSON until Phase 9 adds the page.
 - A check-in body larger than 16384 bytes is rejected with 413 (the server reads at most 16385 bytes and closes the connection).
 - Non-200 prober replies are passed through as-is with their status.
+
+## Phase 9
+- Static files are served only for GET; `/` and `/static/<name>` bypass the rate limiter and `/v1/` check. Cache-Control: no-cache.
+- Page "ranked" count uses `runner_count`; ASN diversity shown from `diversity_index`.
+- Map is a 19-column CSS grid; tile intensity scales with the country's share of the max count.

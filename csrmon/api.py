@@ -2,6 +2,7 @@
 import base64
 import json
 import math
+import os
 import statistics
 import threading
 import time
@@ -17,6 +18,10 @@ MAX_BODY = 16384
 CACHE_TTL_S = 30
 _RANK_KEYS = ("runner_id", "rank", "score", "provisional", "status", "flags", "a7", "a30",
               "a365", "country", "region", "asn", "asn_peers")
+_WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+_STATIC_TYPES = {".html": "text/html; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
+                 ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".svg": "image/svg+xml"}
 _JSON_HEADERS = {"Content-Type": "application/json; charset=utf-8",
                  "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}
 
@@ -101,6 +106,10 @@ class Api:
         headers = {str(k).lower(): v for k, v in (headers or {}).items()}
         parts = urlsplit(target)
         path = parts.path
+        if method == "GET":
+            static = self._static(path)
+            if static is not None:
+                return static
         if not path.startswith("/v1/"):
             return self._out(404, {"error": "not_found"}, {}, json_body=False)
         try:
@@ -111,6 +120,26 @@ class Api:
             return self._out(200, obj, {})
         except _Reply as r:
             return self._out(r.status, r.obj, r.headers)
+
+    @staticmethod
+    def _static(path):
+        if path == "/":
+            name = "index.html"
+        elif path.startswith("/static/"):
+            name = path[len("/static/"):]
+            ext = os.path.splitext(name)[1]
+            if (not name or "/" in name or "\\" in name or name.startswith(".")
+                    or ext not in _STATIC_TYPES):
+                return None
+        else:
+            return None
+        try:
+            with open(os.path.join(_WEB_DIR, name), "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        ctype = _STATIC_TYPES[os.path.splitext(name)[1]]
+        return 200, {"Content-Type": ctype, "Cache-Control": "no-cache"}, data
 
     @staticmethod
     def _out(status, obj, extra, json_body=True):

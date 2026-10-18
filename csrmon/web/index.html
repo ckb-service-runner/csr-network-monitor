@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CSR Network Monitor</title>
+<link rel="stylesheet" href="/static/style.css">
+<script type="module" src="/static/app.mjs"></script>
+</head>
+<body>
+<main>
+  <h1>CSR Network Monitor <span id="network-name"></span></h1>
+  <p id="disclaimer" class="disclaimer">This monitor is a reputation source, not a proof: it shows that a runner answers, follows the chain and serves blocks over P2P.</p>
+  <p id="error" class="error" hidden></p>
+  <section>
+    <h2>Summary</h2>
+    <p id="summary">Loading…</p>
+    <p id="gate"></p>
+  </section>
+  <section>
+    <h2>Countries</h2>
+    <div id="map" class="map" aria-label="Runners per country"></div>
+    <p id="other" class="muted"></p>
+  </section>
+  <section>
+    <h2>Ranking</h2>
+    <div class="table-wrap">
+      <table id="ranking">
+        <thead>
+          <tr><th>#</th><th>Runner</th><th>Score</th><th>30 d</th><th>365 d</th><th>Country</th><th>ASN</th><th>Status</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+</body>
+</html>
