@@ -45,3 +45,21 @@ export function countryTiles(byCountry) {
 export function gateText(g) {
   return `${g.history_days}/${g.min_days} days · ${g.runners}/${g.min_runners} runners · ${g.met ? "met" : "not met"}`;
 }
+
+export function countryLabel(cc) {
+  return typeof cc === "string" && /^[A-Z]{2}$/.test(cc) ? cc : "unknown";
+}
+
+export function countryList(byCountry) {
+  const known = [];
+  let unknown = 0;
+  for (const [cc, n] of Object.entries(byCountry || {})) {
+    if (!(n > 0)) continue;
+    if (countryLabel(cc) === "unknown") unknown += n;
+    else known.push([cc, n]);
+  }
+  known.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const parts = known.map(([cc, n]) => `${cc} ${n}`);
+  if (unknown > 0) parts.push(`unknown ${unknown}`);
+  return parts.join(" · ");
+}

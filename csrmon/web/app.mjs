@@ -1,4 +1,4 @@
-import { formatPercent, formatScore, statusLabel, countryTiles, gateText } from "./format.mjs";
+import { formatPercent, formatScore, statusLabel, countryLabel, countryList, gateText } from "./format.mjs";
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,24 +27,22 @@ function renderSummary(s) {
   $("gate").textContent = "Gate: " + gateText(s.gate);
 }
 
-function renderMap(byCountry) {
-  const { tiles, other } = countryTiles(byCountry);
-  const map = $("map");
-  map.textContent = "";
-  const maxCount = Math.max(1, ...tiles.map((t) => t.count));
-  for (const t of tiles) {
-    const d = document.createElement("div");
-    d.className = "tile" + (t.count > 0 ? " on" : "");
-    d.style.gridColumn = String(t.x + 1);
-    d.style.gridRow = String(t.y + 1);
-    d.style.setProperty("--level", String(t.count / maxCount));
-    d.title = `${t.cc}: ${t.count}`;
-    d.textContent = t.count > 0 ? `${t.cc} ${t.count}` : t.cc;
-    map.appendChild(d);
-  }
-  $("other").textContent = other.length
-    ? "Other: " + other.map((o) => `${o.cc} ${o.count}`).join(", ") : "";
+let mapLocations = [];
+
+function renderMap(locations, byCountry) {
+  const wm = globalThis.CSRWorldMap;
+  mapLocations = locations ? locations.locations || [] : [];
+  $("map").innerHTML = wm.svg(mapLocations, { label: "Runners on a world map" });
+  if (!locations) $("map-info").textContent = "Location data is not available.";
+  $("other").textContent = countryList(byCountry);
 }
+
+$("map").addEventListener("click", (ev) => {
+  const c = ev.target.closest ? ev.target.closest("circle[data-index]") : null;
+  if (!c) return;
+  const d = globalThis.CSRWorldMap.dots(mapLocations)[Number(c.getAttribute("data-index"))];
+  if (d) $("map-info").textContent = d.label;
+});
 
 function renderRanking(items) {
   const body = $("ranking").tBodies[0];
@@ -56,7 +54,7 @@ function renderRanking(items) {
     cell(tr, formatScore(it.score));
     cell(tr, formatPercent(it.a30));
     cell(tr, formatPercent(it.a365));
-    cell(tr, it.country || "–");
+    cell(tr, countryLabel(it.country));
     cell(tr, it.asn === null || it.asn === undefined ? "–" : String(it.asn));
     cell(tr, statusLabel(it));
     body.appendChild(tr);
@@ -68,12 +66,13 @@ async function main() {
     const mon = await getJson("/v1/monitor");
     const net = mon.network;
     $("network-name").textContent = net;
-    const [summary, runners] = await Promise.all([
+    const [summary, runners, locations] = await Promise.all([
       getJson(`/v1/${net}/summary`),
       getJson(`/v1/${net}/runners?limit=500`),
+      getJson("/v1/locations").catch(() => null),
     ]);
     renderSummary(summary);
-    renderMap(summary.by_country);
+    renderMap(locations, summary.by_country);
     renderRanking(runners.items);
   } catch (e) {
     const el = $("error");
