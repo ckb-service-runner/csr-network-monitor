@@ -10,7 +10,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import configcell, scoring
+from . import configcell, geo, scoring
 from . import __version__
 from .store import add_days, day_of, day_start
 
@@ -157,6 +157,9 @@ class Api:
         if segs == ["network"]:
             self._method(method, "GET")
             return self._network()
+        if segs == ["locations"]:
+            self._method(method, "GET")
+            return self._locations()
         if len(segs) == 2 and segs[0] == "nodes":
             self._method(method, "GET")
             return self._node(unquote(segs[1]), today)
@@ -342,6 +345,21 @@ class Api:
                      sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
         return {"nodes_total": len(runners), "nodes_reachable": reachable,
                 "countries": countries, "updated_at": int(now)}
+
+    def _locations(self):
+        runners = self.store.list_runners()
+        cells = {}
+        located = 0
+        for r in runners:
+            lat, lon = r.get("loc_lat"), r.get("loc_lon")
+            if lat is None or lon is None or r["country"] in (None, "", "??"):
+                continue
+            located += 1
+            cells[(int(lat), int(lon))] = cells.get((int(lat), int(lon)), 0) + 1
+        locations = [{"lat": la, "lon": lo, "count": n} for (la, lo), n in
+                     sorted(cells.items(), key=lambda kv: (-kv[1], -kv[0][0], kv[0][1]))]
+        return {"locations": locations, "located": located, "unlocated": len(runners) - located,
+                "grid_deg": geo.GRID_DEG, "updated_at": int(self.clock())}
 
     def _node(self, peer_id, today):
         r = self.store.find_runner_by_peer(peer_id)

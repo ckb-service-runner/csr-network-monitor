@@ -61,6 +61,18 @@ Testnet values: `config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8
 
 Download the free **DB-IP Lite** country and ASN CSV files and point `geo_country_csv` / `geo_asn_csv` at them. **MaxMind GeoLite2** CSVs must first be converted to the same columns (`start_ip,end_ip,value…` as in the DB-IP files: country code, or ASN and organisation). Without files all runners have country `??`. Only a salted hash of a runner IP is stored; IPs and endpoints are never exposed.
 
+## Map locations
+
+The map on the public page needs the **DB-IP City Lite** CSV (monthly release, free):
+
+1. Download `dbip-city-lite-YYYY-MM.csv.gz` from db-ip.com and gunzip it.
+2. Place it as `/var/lib/csr-network-monitor/geo/dbip-city-lite.csv`.
+3. Set `geo_city_csv = "/var/lib/csr-network-monitor/geo/dbip-city-lite.csv"` in the monitor config and restart the service.
+
+Coordinates are reduced to the centre of a 2° × 2° cell while the file is loaded; only that cell is stored per runner and published via `GET /v1/locations`. Without the file, runners are listed as "unknown" and do not appear on the map.
+
+The data is licensed **CC BY 4.0**; the public page shows the required credit to DB-IP. Refresh the file monthly (replace it and restart). Memory use: the snapped, merged ranges take roughly 50–150 MB for the full file; loading takes some seconds at start-up.
+
 ## Tip cross-check
 
 Every `crosscheck_interval_s` the monitor compares its node tip with `second_tip_source` (an independent node RPC). If the local node is unreachable or differs by more than `sync_threshold`, probing is paused; paused slots are `excluded`, never misses.
