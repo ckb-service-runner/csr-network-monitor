@@ -2,6 +2,7 @@
 import bisect
 import csv
 import ipaddress
+import math
 import os
 import secrets
 from array import array
@@ -93,10 +94,122 @@ class _Table:
         return None if i is None else self.values[i]
 
 
+GRID_DEG = 2
+
+
+def snap(lat, lon) -> tuple[int, int]:
+    """Centre of the GRID_DEG x GRID_DEG cell containing the point."""
+    i = min(max(math.floor((lat + 90) / GRID_DEG), 0), 180 // GRID_DEG - 1)
+    j = math.floor((lon + 180) / GRID_DEG) % (360 // GRID_DEG)
+    return -90 + GRID_DEG * i + GRID_DEG // 2, -180 + GRID_DEG * j + GRID_DEG // 2
+
+
+class _CityRanges:
+    """Merged (start, end, cell index) ranges for one IP family, in compact arrays."""
+
+    def __init__(self, code):
+        self.starts = array(code)
+        self.ends = array(code)
+        self.cells = array("I")
+        self.sorted = True
+
+    def add(self, s, e, c):
+        if self.starts:
+            if s < self.starts[-1]:
+                self.sorted = False
+            elif self.cells[-1] == c and s <= self.ends[-1] + 1:
+                if e > self.ends[-1]:
+                    self.ends[-1] = e
+                return
+        self.starts.append(s)
+        self.ends.append(e)
+        self.cells.append(c)
+
+    def finish(self):
+        if self.sorted:
+            return
+        rows = sorted(zip(self.starts, self.ends, self.cells), key=lambda r: r[0])
+        code = self.starts.typecode
+        self.starts, self.ends, self.cells = array(code), array(code), array("I")
+        self.sorted = True
+        for s, e, c in rows:
+            self.add(s, e, c)
+
+    def __len__(self):
+        return len(self.starts)
+
+    def find(self, n):
+        i = bisect.bisect_right(self.starts, n) - 1
+        if i >= 0 and n <= self.ends[i]:
+            return self.cells[i]
+        return None
+
+
+def _finite_coord(text, limit):
+    try:
+        v = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v) or abs(v) > limit:
+        return None
+    return v
+
+
 class GeoDB:
-    def __init__(self, country_csv=None, asn_csv=None):
+    def __init__(self, country_csv=None, asn_csv=None, city_csv=None):
         self._country = _Table(country_csv)
         self._asn = _Table(asn_csv)
+        self._cells = []
+        self._c4 = _CityRanges("I")
+        self._c6 = _CityRanges("Q")   # keyed by the upper 64 bits of the address
+        if city_csv:
+            self._load_city(city_csv)
+        self.city_range_count = len(self._c4) + len(self._c6)
+
+    def _load_city(self, path):
+        index = {}
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if len(row) < 8:
+                    continue
+                try:
+                    a = ipaddress.ip_address(row[0].strip())
+                    b = ipaddress.ip_address(row[1].strip())
+                except ValueError:
+                    continue
+                if a.version != b.version:
+                    continue
+                if row[3].strip().upper() in ("", "ZZ", "??"):
+                    continue
+                lat = _finite_coord(row[6], 90)
+                lon = _finite_coord(row[7], 180)
+                if lat is None or lon is None:
+                    continue
+                cell = snap(lat, lon)
+                c = index.get(cell)
+                if c is None:
+                    c = index[cell] = len(self._cells)
+                    self._cells.append(cell)
+                if a.version == 4:
+                    self._c4.add(int(a), int(b), c)
+                else:
+                    self._c6.add(int(a) >> 64, int(b) >> 64, c)
+        self._c4.finish()
+        self._c6.finish()
+
+    def locate(self, ip):
+        """Snapped (lat, lon) cell centre for ip, or None."""
+        if not self._cells:
+            return None
+        try:
+            addr = ipaddress.ip_address(str(ip).strip())
+        except ValueError:
+            return None
+        if addr.version == 4:
+            c = self._c4.find(int(addr))
+        else:
+            c = self._c6.find(int(addr) >> 64)
+        return None if c is None else self._cells[c]
 
     def lookup(self, ip) -> dict:
         out = {"country": "??", "region": "??", "asn": 0, "as_org": ""}

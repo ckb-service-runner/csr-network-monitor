@@ -135,12 +135,17 @@ class CsrProber:
                "csr_version": ev.get("csr_version"), "ckb_version": ev.get("node_version"),
                "ip_hash": None, "country": None, "asn": None,
                "p2p_verified": p2p_verified if result == "ok" else None}
+        loc = None
         if ip:
             rec["ip_hash"] = geo_mod.ip_hash(ip, self.salt)
             if self.geo is not None:
                 g = self.geo.lookup(ip)
                 rec["country"], rec["asn"] = g["country"], g["asn"]
-        self.store.record_probe(**rec)
+                locate = getattr(self.geo, "locate", None)
+                if locate is not None:
+                    loc = locate(ip)
+        lat, lon = loc if loc else (None, None)
+        self.store.record_probe(**rec, loc_lat=lat, loc_lon=lon)
         return rec
 
     def _upsert_runner(self, ev, mode, endpoint, now, keep_mode=False):

@@ -35,7 +35,7 @@ class Daemon:
         self.secret = keys.load_or_create_secret(c.key_path)
         self.store = cli.init_db(c)
         salt = load_or_create_salt(c.salt_path)
-        geo = GeoDB(c.geo_country_csv or None, c.geo_asn_csv or None)
+        geo = GeoDB(c.geo_country_csv or None, c.geo_asn_csv or None, c.geo_city_csv or None)
         self.chain = RpcChain(c.node_rpc)
         second = RpcChain(c.second_tip_source) if c.second_tip_source else None
         self.cross = TipCrossCheck(self.chain, second, c.sync_threshold)

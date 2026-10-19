@@ -32,6 +32,7 @@ class Config:
     allow_insecure_endpoints: bool = False
     geo_country_csv: str = ""
     geo_asn_csv: str = ""
+    geo_city_csv: str = ""
     p2p_check_cmd: str = ""
     p2p_check_timeout_s: int = 120
     p2p_interval_s: int = 86400

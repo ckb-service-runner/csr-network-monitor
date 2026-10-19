@@ -12,7 +12,7 @@ create table if not exists runners(
   runner_id text primary key, service_pubkey text, peer_id text, p2p_pubkey text, reg_outpoint text,
   mode text, endpoint text, p2p_port integer, first_seen integer, last_seen integer, status text,
   flags text not null default '[]', ranking_opt_in integer, country text, region text, asn integer,
-  csr_version text, ckb_version text);
+  csr_version text, ckb_version text, loc_lat integer, loc_lon integer);
 create table if not exists probes(
   runner_id text, ts integer, slot integer, mode text, result text, failure_reason text,
   latency_ms integer, tip_number integer, lag integer, in_sync integer, peers_out integer,
@@ -79,6 +79,10 @@ class Store:
             cols = {r[1] for r in self._con.execute("pragma table_info(probes)")}
             if "p2p_verified" not in cols:
                 self._con.execute("ALTER TABLE probes ADD COLUMN p2p_verified INTEGER")
+            rcols = {r[1] for r in self._con.execute("pragma table_info(runners)")}
+            for col in ("loc_lat", "loc_lon"):
+                if col not in rcols:
+                    self._con.execute(f"ALTER TABLE runners ADD COLUMN {col} INTEGER")
 
     def close(self):
         with self._lock:
@@ -209,7 +213,7 @@ class Store:
     def record_probe(self, runner_id, *, ts, slot, mode, result, failure_reason=None,
                      latency_ms=None, tip_number=None, lag=None, in_sync=None, peers_out=None,
                      csr_version=None, ckb_version=None, ip_hash=None, country=None,
-                     asn=None, p2p_verified=None) -> bool:
+                     asn=None, p2p_verified=None, loc_lat=None, loc_lon=None) -> bool:
         if result not in _PROBE_RESULTS:
             raise ValueError(f"invalid probe result {result!r}")
         ins = None if in_sync is None else (1 if in_sync else 0)
@@ -228,9 +232,13 @@ class Store:
                     "update runners set last_seen=max(coalesce(last_seen,0), ?) where runner_id=?",
                     (ts, runner_id))
             if country is not None:
+                lat, lon = (loc_lat, loc_lon)
+                if country == "??" or lat is None or lon is None:
+                    lat = lon = None
                 self._con.execute(
-                    "update runners set country=?, region=?, asn=? where runner_id=?",
-                    (country, geo.region_for(country), asn, runner_id))
+                    "update runners set country=?, region=?, asn=?, loc_lat=?, loc_lon=?"
+                    " where runner_id=?",
+                    (country, geo.region_for(country), asn, lat, lon, runner_id))
             if csr_version is not None:
                 self._con.execute(
                     "update runners set csr_version=?, ckb_version=? where runner_id=?",
