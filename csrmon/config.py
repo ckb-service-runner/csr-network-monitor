@@ -38,6 +38,7 @@ class Config:
     p2p_interval_s: int = 86400
     rate_limit_per_min: int = 60
     trusted_proxies: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
+    min_stake_ckb: int = 10000
     gate_min_days: int = 365
     gate_min_runners: int = 60
     gate_max_asn_share: float = 0.25
@@ -84,6 +85,7 @@ _MIN = {
     "ping_port": 1, "discovery_interval_s": 1, "discovery_backoff_s": 1,
     "answer_deadline_s": 1, "reachable_window_s": 1, "clock_update_interval_s": 1,
     "attest_validity_days": 1, "attest_min_ok_24h": 1, "attest_cache_s": 1,
+    "min_stake_ckb": 1,
 }
 _HASH_TYPES = ("type", "data", "data1", "data2")
 
