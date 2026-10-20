@@ -66,15 +66,15 @@ def test_stake_states(env):
     fc.live[stake_op(0xa1)] = dao_live(1, 10_000)
     fc.live[stake_op(0xa2)] = DEAD
     fc.live[stake_op(0xa3)] = dao_live(3, 9_999)
-    fc.live[stake_op(0xa4)] = dao_live(9, 50_000)               # deposit of another owner
+    fc.live[stake_op(0xa4)] = dao_live(9, 50_000)               # deposit of another owner (A8: allowed, the contract checked its consent)
     fc.live[stake_op(0xa6)] = dao_live(6, 10_000, data="0x" + "2a" + "00" * 7)
-    assert scan(env) == {"valid": 1, "invalid": 0, "no_stake": 5}
+    assert scan(env) == {"valid": 2, "invalid": 0, "no_stake": 4}
     assert st.registration_for("QmOk") == {"peer_id": "QmOk", "service_pubkey": pk(1), "expiry_ms": EXP,
                                            "outpoint": "0x" + "01" * 32 + ":0"}
-    for peer in ("QmGone", "QmSmall", "QmForeign", "QmMissing", "QmPhase1"):
+    for peer in ("QmGone", "QmSmall", "QmMissing", "QmPhase1"):
         assert st.registration_for(peer) is None, peer
     want = {"QmOk": ("deposited", 10_000, None), "QmGone": ("withdrawn", None, "spent"),
-            "QmSmall": ("invalid", 9_999, "too_small"), "QmForeign": ("invalid", 50_000, "wrong_owner"),
+            "QmSmall": ("invalid", 9_999, "too_small"), "QmForeign": ("deposited", 50_000, None),
             "QmMissing": ("invalid", None, "not_found"), "QmPhase1": ("invalid", 10_000, "not_deposit")}
     for peer, (status, cap, reason) in want.items():
         r = st.stake_for(peer)
@@ -84,9 +84,10 @@ def test_stake_states(env):
     assert st.stake_for("QmNobody") is None
     # the deposit is withdrawn later: the registration stops counting at the next scan
     fc.live[stake_op(0xa1)] = DEAD
-    assert scan(env) == {"valid": 0, "invalid": 0, "no_stake": 6}
+    assert scan(env) == {"valid": 1, "invalid": 0, "no_stake": 5}
     assert st.registration_for("QmOk") is None
     assert st.stake_for("QmOk")["status"] == "withdrawn"
+    assert st.registration_for("QmForeign")["service_pubkey"] == pk(4)
 
 
 def test_one_deposit_one_registration(env):

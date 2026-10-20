@@ -91,6 +91,9 @@ class ConfigCellWriter:
 
 
 def scan_registry(store, chain, config, monitor_pubkey):
+    """Keep the registry cells of this network and monitor that are backed by a live DAO
+    deposit of at least `min_stake_ckb`; the deposit owner's consent is checked by the
+    `csr-registry` contract (D-A8-1), so the registry owner may differ from the deposit owner."""
     if not config.csr_registry_code_hash or not config.config_type_args:
         return None
     script = {"code_hash": config.csr_registry_code_hash, "hash_type": config.csr_registry_hash_type,
@@ -114,8 +117,7 @@ def scan_registry(store, chain, config, monitor_pubkey):
             invalid += 1
             continue
         op = c["out_point"]
-        res = stake.check_stake(chain, reg["stake"], min_stake_ckb=config.min_stake_ckb,
-                                owner_lock_hash=to_hex(args[:32]))
+        res = stake.check_stake(chain, reg["stake"], min_stake_ckb=config.min_stake_ckb)
         cands.append({"peer_id": reg["peer_id"], "service_pubkey": reg["service_pubkey"],
                       "reg_outpoint": f"{op['tx_hash']}:{int(op['index'], 16)}",
                       "expiry_ms": att["expiry_ms"], "stake_outpoint": reg["stake"],

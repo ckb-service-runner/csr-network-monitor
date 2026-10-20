@@ -27,7 +27,7 @@ Commands: `check-config`, `keygen`, `show-key`, `init-db`, `run` (each needs `--
 
 ## Configuration
 
-The monitor checks that every registration is backed by a live Nervos DAO deposit (`min_stake_ckb`), attests only runners with such a stake and publishes its state in `/v1/nodes/{peer_id}`.
+The monitor checks that every registration is backed by a live Nervos DAO deposit (`min_stake_ckb`; the deposit owner's consent is checked by the registry contract), attests only runners with such a stake and publishes its state in `/v1/nodes/{peer_id}`.
 
 See [config/monitor-testnet.toml](config/monitor-testnet.toml) (all keys, commented). Main groups: network and paths, probing (`probe_interval_s`, `sync_threshold`), registration discovery, geolocation CSVs, P2P helper, API limits, ranking gates and the stat cell (disabled by default).
 
