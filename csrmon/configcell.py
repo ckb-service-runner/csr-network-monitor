@@ -1,7 +1,7 @@
 """On-chain duties for CSR's registry: config cell clock, registry scan, attestations."""
 import copy
 
-from . import crypto, csrchain, molecule, ping, protocol, stat_cell
+from . import crypto, csrchain, molecule, ping, protocol, stake, stat_cell
 from .hashing import blake160, from_hex, to_hex
 
 DAY_MS = 86_400_000
@@ -96,26 +96,47 @@ def scan_registry(store, chain, config, monitor_pubkey):
     script = {"code_hash": config.csr_registry_code_hash, "hash_type": config.csr_registry_hash_type,
               "args": config_type_hash(config.config_type_args)}
     nid = csrchain.NETWORK_IDS[config.network]
-    rows, invalid = [], 0
+    cands, invalid = [], 0
     for c in chain.get_cells(script, "type", exact=True):
         try:
             reg = csrchain.parse_registry(from_hex(c.get("output_data") or "0x"))
-        except ValueError:
+            args = from_hex(c["output"]["lock"]["args"])
+            if len(args) != 64:
+                raise ValueError("bad lock args")
+        except (ValueError, KeyError, TypeError):
             invalid += 1
             continue
         att = reg["attestation"]
-        if (reg["network"] == nid and att["network_id"] == nid
+        if not (reg["network"] == nid and att["network_id"] == nid
                 and att["peer_id"] == reg["peer_id"]
                 and att["service_pubkey"] == reg["service_pubkey"]
                 and csrchain.verify_attestation(att, monitor_pubkey)):
-            op = c["out_point"]
-            rows.append({"peer_id": reg["peer_id"], "service_pubkey": reg["service_pubkey"],
-                         "expiry_ms": att["expiry_ms"],
-                         "outpoint": f"{op['tx_hash']}:{int(op['index'], 16)}"})
-        else:
             invalid += 1
-    store.set_registrations(rows)
-    return {"valid": len(rows), "invalid": invalid}
+            continue
+        op = c["out_point"]
+        res = stake.check_stake(chain, reg["stake"], min_stake_ckb=config.min_stake_ckb,
+                                owner_lock_hash=to_hex(args[:32]))
+        cands.append({"peer_id": reg["peer_id"], "service_pubkey": reg["service_pubkey"],
+                      "reg_outpoint": f"{op['tx_hash']}:{int(op['index'], 16)}",
+                      "expiry_ms": att["expiry_ms"], "stake_outpoint": reg["stake"],
+                      "status": res["status"], "capacity_ckb": res["capacity_ckb"],
+                      "reason": res["reason"],
+                      "_order": (int(c["block_number"], 16), int(c["tx_index"], 16))})
+    cands.sort(key=lambda r: (*r["_order"], r["reg_outpoint"]))
+    used = set()
+    for r in cands:
+        del r["_order"]
+        if r["status"] == "deposited":
+            if r["stake_outpoint"] in used:
+                r["status"], r["reason"] = "duplicate", "stake_in_use"
+            else:
+                used.add(r["stake_outpoint"])
+    good = [r for r in cands if r["status"] == "deposited"]
+    store.set_registrations([{"peer_id": r["peer_id"], "service_pubkey": r["service_pubkey"],
+                              "expiry_ms": r["expiry_ms"], "outpoint": r["reg_outpoint"]}
+                             for r in good])
+    store.set_stakes(cands)
+    return {"valid": len(good), "invalid": invalid, "no_stake": len(cands) - len(good)}
 
 
 class Attester:
@@ -123,10 +144,14 @@ class Attester:
         self.store, self.config, self.secret, self.writer = store, config, secret, writer
 
     def handle_attest(self, body, ip, now):
-        keys = ("peer_id", "service_pubkey", "binding_sig", "network")
+        keys = ("peer_id", "service_pubkey", "binding_sig", "network", "stake")
         if not isinstance(body, dict) or not all(isinstance(body.get(k), str) for k in keys):
             return 400, {"error": "bad_request"}
-        peer, svc, sig, network = (body[k] for k in keys)
+        peer, svc, sig, network, stake_op = (body[k] for k in keys)
+        try:
+            stake_op = csrchain.format_outpoint(*csrchain.parse_outpoint(stake_op))
+        except ValueError:
+            return 400, {"error": "bad_request"}
         if network != self.config.network:
             return 400, {"error": "wrong_network"}
         if not ping.verify_binding(peer, svc, network, sig):
@@ -140,6 +165,16 @@ class Attester:
                 or sum(1 for p in self.store.probes(rid, since=now - 86400, until=now + 1)
                        if p["result"] == "ok") < self.config.attest_min_ok_24h):
             return 403, {"error": "not_eligible"}
+        try:
+            st = stake.check_stake(self.writer.chain, stake_op,
+                                   min_stake_ckb=self.config.min_stake_ckb)
+        except Exception:
+            return 503, {"error": "chain_unavailable"}
+        if st["status"] != "deposited":
+            return 403, {"error": "stake_invalid", "reason": st["reason"]}
+        user = self.store.stake_user(stake_op)
+        if user is not None and user != peer:
+            return 403, {"error": "stake_in_use"}
         last = self.store.last_issued(peer, svc)
         if last is not None and 0 <= now - last["issued_at"] < self.config.attest_cache_s:
             return 200, last["attestation"]

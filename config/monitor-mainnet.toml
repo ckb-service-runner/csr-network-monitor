@@ -43,6 +43,7 @@ clock_update_interval_s = 3600 # config cell clock_ms update (needs stat_cell_si
 clock_update_fee_shannons = 100000
 attest_validity_days = 7       # attestation expiry = clock_ms + this
 attest_min_ok_24h = 1          # ok probes in the last 24 h required for POST /v1/attest
+min_stake_ckb = 10000          # minimum capacity (CKB) of the Nervos DAO deposit behind a registration
 attest_cache_s = 3600          # re-issue the same attestation within this time
 
 # --- geolocation (DB-IP Lite CSV; GeoLite2 must be converted to the same columns) ---

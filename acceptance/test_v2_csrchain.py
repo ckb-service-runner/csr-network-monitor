@@ -48,10 +48,11 @@ def test_sign_attestation_file():
 
 
 def test_parse_registry_vector():
-    reg = csrchain.parse_registry(from_hex(V.REGISTRY_DATA))
+    reg = csrchain.parse_registry(from_hex(V.REGISTRY_V2_DATA))
     assert reg["peer_id"] == V.PEER_ID
     assert reg["service_pubkey"] == V.SERVICE_PUBKEY
-    assert reg["float_lock_hash"] == V.REGISTRY_FLOAT_LOCK_HASH
+    assert reg["payout_lock_hash"] == V.REGISTRY_PAYOUT_LOCK_HASH
+    assert reg["stake"] == V.REGISTRY_STAKE
     assert reg["network"] == 1
     assert reg["prekeys"] == "0x"
     att = reg["attestation"]
@@ -61,9 +62,9 @@ def test_parse_registry_vector():
 
 
 def test_encode_registry_roundtrip():
-    reg = csrchain.parse_registry(from_hex(V.REGISTRY_DATA))
-    assert to_hex(csrchain.encode_registry(reg)) == V.REGISTRY_DATA
-    other = dict(reg, prekeys="0x0102", float_lock_hash="0x" + "11" * 32)
+    reg = csrchain.parse_registry(from_hex(V.REGISTRY_V2_DATA))
+    assert to_hex(csrchain.encode_registry(reg)) == V.REGISTRY_V2_DATA
+    other = dict(reg, prekeys="0x0102", payout_lock_hash="0x" + "11" * 32)
     assert csrchain.parse_registry(csrchain.encode_registry(other)) == other
 
 
@@ -76,12 +77,12 @@ def test_encode_registry_roundtrip():
 ])
 def test_parse_registry_rejects_bad_molecule(mutate):
     with pytest.raises(ValueError):
-        csrchain.parse_registry(mutate(from_hex(V.REGISTRY_DATA)))
+        csrchain.parse_registry(mutate(from_hex(V.REGISTRY_V2_DATA)))
 
 
 def test_parse_registry_rejects_wrong_field_count():
-    # a table with 7 offsets instead of 6
-    d = from_hex(V.REGISTRY_DATA)
+    # a table with 8 offsets instead of 7
+    d = from_hex(V.REGISTRY_V2_DATA)
     first = int.from_bytes(d[4:8], "little")
     offsets = [int.from_bytes(d[4 + 4 * i:8 + 4 * i], "little") for i in range(first // 4 - 1)]
     body = d[first:]

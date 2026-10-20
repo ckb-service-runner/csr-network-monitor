@@ -55,7 +55,7 @@ A correct answer creates the runner (mode `outbound`).
 
 ### `POST /v1/attest`
 
-Body `{"peer_id","service_pubkey","binding_sig","network"}`; reply is CSR's attestation file `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature","monitor_pubkey"}` (input of `csr register prepare`).
+Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = out point text `0x<64 hex>:<index>` of the Nervos DAO deposit); reply is CSR's attestation file `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature","monitor_pubkey"}` (input of `csr register prepare`).
 
 | Status | Body | Meaning |
 |---|---|---|
@@ -63,13 +63,15 @@ Body `{"peer_id","service_pubkey","binding_sig","network"}`; reply is CSR's atte
 | 400 | `bad_request`, `wrong_network` | malformed / other network |
 | 401 | `bad_signature` | binding invalid |
 | 403 | `not_eligible` | see policy below |
+| 403 | `stake_invalid` (with `reason`) | the stake is not a deposited DAO cell (`spent`, `not_found`, `not_dao`, `not_deposit`, `too_small`) |
+| 403 | `stake_in_use` | the deposit backs a registration of another peer |
 | 413 | `too_large` | body too large |
 | 429 | `rate_limited` | too many requests |
 | 503 | `chain_unavailable`, `unavailable` | config cell clock unreadable / attestations not configured |
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
-Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); status 404 `not_ranked` for nodes that are unknown or still provisional. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); status 404 `not_ranked` for nodes that are unknown or still provisional. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
 
 ### `GET /v1/locations`
 
@@ -99,8 +101,21 @@ slot = `int(ts // probe_interval_s)`. At most one outcome is recorded per runner
 ## Registry, config cell and attestations
 
 - The monitor owns the **config cell** (Type ID; lock = the monitor key's secp256k1 sighash lock). Data = `monitor_pubkey (33) ‖ clock_ms (u64 LE) ‖ 8 reserved bytes`. Every `clock_update_interval_s` the monitor spends it into the same lock/type with `clock_ms` = timestamp of the chain tip; the fee is taken from the cell capacity.
-- **Registry cell** (`csr-registry`): type script `{code_hash: csr_registry_code_hash, hash_type: "data2", args: config cell type hash}`. Data (molecule) `Registry {peer_id, service_pubkey, float_lock_hash, network, attestation, prekeys}`, `Attestation {peer_id, service_pubkey, network, expiry_ms, signature[65]}`; network ids mainnet 0, testnet 1, devnet 2. The monitor scans these cells every `probe_interval_s` and keeps those whose network matches and whose attestation was signed by this monitor and matches the cell.
-- **Attestation policy** (`POST /v1/attest`): the binding signature must verify, the network must be the monitor's, and the node must be an active runner with that `peer_id` and at least `attest_min_ok_24h` (default 1) successful probes in the last 24 h; otherwise `403 not_eligible`. Validity = config cell `clock_ms` + `attest_validity_days` (default 7 days). The same attestation is returned from a cache for `attest_cache_s` (default 3600 s).
+- **Registry cell** (`csr-registry`, Registry v2): type script `{code_hash: csr_registry_code_hash, hash_type: "data2", args: config cell type hash}`; lock `csr-dual-lock` with 64-byte args `owner_lock_hash (32) ‖ runner_lock_hash (32)`. Data is a molecule table with 7 fields:
+
+  | # | field | type |
+  |--:|---|---|
+  | 0 | `peer_id` | `Bytes` (UTF-8) |
+  | 1 | `service_pubkey` | `Byte33` |
+  | 2 | `payout_lock_hash` | `Byte32` (lock hash of the anyone-can-pay tip cell) |
+  | 3 | `network` | `byte` (0 mainnet, 1 testnet, 2 devnet) |
+  | 4 | `attestation` | `Attestation {peer_id, service_pubkey, network, expiry_ms, signature[65]}` |
+  | 5 | `prekeys` | `Bytes` |
+  | 6 | `stake` | `OutPoint` = `tx_hash (32) ‖ index (u32 LE)` |
+
+  v1 cells (6 fields) are invalid. The monitor scans these cells every `probe_interval_s` and keeps those whose network matches, whose attestation was signed by this monitor and matches the cell, and whose stake is deposited.
+- **Stake** (D-A7-1): the stake is a Nervos DAO deposit owned by the operator. Out points are written `0x<64 hex>:<index decimal>`. It is **deposited** when `get_live_cell` says `live` and the cell has the DAO type script `{code_hash: 0x82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e, hash_type: type, args: 0x}`, data of exactly 8 zero bytes, capacity ≥ `min_stake_ckb` (default 10 000 CKB) and, in the registry scan, a lock hash equal to the registry cell's `owner_lock_hash`. States: `deposited`; `withdrawn` (the cell is dead); `invalid` (anything else, with a reason: `not_found`, `not_dao`, `not_deposit`, `too_small`, `wrong_owner`); `duplicate` (**one deposit, one registration**: of several registry cells naming the same deposit only the oldest – lowest block number, tx index, out point – counts). Only registrations with a deposited stake are valid.
+- **Attestation policy** (`POST /v1/attest`): the binding signature must verify, the network must be the monitor's, and the node must be an active runner with that `peer_id` and at least `attest_min_ok_24h` (default 1) successful probes in the last 24 h; otherwise `403 not_eligible`. The `stake` must be a deposited DAO cell of at least `min_stake_ckb` (`403 stake_invalid` with a `reason`) not used by another peer's registration (`403 stake_in_use`); it is re-checked on every request, also when the cached attestation is returned. Validity = config cell `clock_ms` + `attest_validity_days` (default 7 days). The same attestation is returned from a cache for `attest_cache_s` (default 3600 s).
 
 ## Epoch data and leaves
 

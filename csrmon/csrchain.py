@@ -1,4 +1,6 @@
 """CSR on-chain formats: attestations, the csr-registry cell (molecule) and the config cell data."""
+import re
+
 from . import crypto
 from .hashing import ckb_blake2b, from_hex, to_hex
 
@@ -99,8 +101,27 @@ def verify_attestation(att, monitor_pubkey) -> bool:
         return False
 
 
+_OUTPOINT_RE = re.compile(r"0x([0-9a-fA-F]{64}):(0|[1-9][0-9]*)")
+
+
+def parse_outpoint(s) -> tuple:
+    m = _OUTPOINT_RE.fullmatch(s) if isinstance(s, str) else None
+    if not m or int(m.group(2)) > 0xFFFFFFFF:
+        raise ValueError("bad out point")
+    return bytes.fromhex(m.group(1)), int(m.group(2))
+
+
+def format_outpoint(tx_hash: bytes, index: int) -> str:
+    return f"0x{bytes(tx_hash).hex()}:{index}"
+
+
+def _stake_bytes(s: str) -> bytes:
+    tx, i = parse_outpoint(s)
+    return tx + _u32(i)
+
+
 def parse_registry(data: bytes) -> dict:
-    f = _split_table(bytes(data), 6, "Registry")
+    f = _split_table(bytes(data), 7, "Registry")
     a = _split_table(f[4], 5, "Attestation")
     att = {"peer_id": _peer(a[0], "attestation.peer_id"),
            "service_pubkey": to_hex(_fixed(a[1], 33, "attestation.service_pubkey")),
@@ -109,10 +130,12 @@ def parse_registry(data: bytes) -> dict:
            "signature": to_hex(_fixed(a[4], 65, "attestation.signature"))}
     return {"peer_id": _peer(f[0], "peer_id"),
             "service_pubkey": to_hex(_fixed(f[1], 33, "service_pubkey")),
-            "float_lock_hash": to_hex(_fixed(f[2], 32, "float_lock_hash")),
+            "payout_lock_hash": to_hex(_fixed(f[2], 32, "payout_lock_hash")),
             "network": _fixed(f[3], 1, "network")[0],
             "attestation": att,
-            "prekeys": to_hex(_read_bytes(f[5], "prekeys"))}
+            "prekeys": to_hex(_read_bytes(f[5], "prekeys")),
+            "stake": format_outpoint(_fixed(f[6], 36, "stake")[:32],
+                                     int.from_bytes(f[6][32:], "little"))}
 
 
 def encode_registry(reg: dict) -> bytes:
@@ -121,8 +144,8 @@ def encode_registry(reg: dict) -> bytes:
                 bytes([att["network_id"]]), int(att["expiry_ms"]).to_bytes(8, "little"),
                 from_hex(att["signature"])])
     return _table([_bytes(reg["peer_id"].encode("utf-8")), from_hex(reg["service_pubkey"]),
-                   from_hex(reg["float_lock_hash"]), bytes([reg["network"]]), a,
-                   _bytes(from_hex(reg["prekeys"]))])
+                   from_hex(reg["payout_lock_hash"]), bytes([reg["network"]]), a,
+                   _bytes(from_hex(reg["prekeys"])), _stake_bytes(reg["stake"])])
 
 
 def config_cell_data(monitor_pubkey: bytes, clock_ms: int) -> bytes:

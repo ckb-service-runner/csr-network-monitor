@@ -10,6 +10,7 @@ from csrmon import store as store_mod, config as config_mod
 from csrmon.hashing import blake160, from_hex, to_hex
 from fakes import cell, block_ts
 from fakes_v2 import FakeChainV2
+from fakes_stake import FakeChainStake, dao_live, dual_lock
 
 MON = (0x51).to_bytes(32, "big")
 MON_PK_B = crypto.pubkey_from_secret(MON)
@@ -47,7 +48,7 @@ def env(tmp_path):
     (tmp_path / "c.toml").write_text("\n".join(lines) + "\n")
     c = config_mod.load_config(str(tmp_path / "c.toml"))
     st = store_mod.Store(c.db_path)
-    fc = FakeChainV2(tip=12_000_000)
+    fc = FakeChainStake(tip=12_000_000)
     sent = []
 
     def on_send(tx):
@@ -116,19 +117,24 @@ def test_update_refused_for_foreign_cell(env):
 
 # ---------- registry scan ----------
 
+def stake_of(tx_byte):
+    return "0x" + f"{0x80 + tx_byte:02x}" * 32 + ":0"
+
+
 def registry_cell(peer, svc_n, *, signer=MON, network_id=1, att_peer=None, expiry_ms=NOW * 1000 + 7 * 86400000,
                   tx_byte=1):
     att = csrchain.sign_attestation(signer, peer_id=att_peer or peer, service_pubkey=pk(svc_n),
                                     network={0: "mainnet", 1: "testnet", 2: "devnet"}[network_id],
                                     expiry_ms=expiry_ms)
-    reg = {"peer_id": peer, "service_pubkey": pk(svc_n), "float_lock_hash": "0x" + "77" * 32,
-           "network": network_id,
+    reg = {"peer_id": peer, "service_pubkey": pk(svc_n), "payout_lock_hash": "0x" + "77" * 32,
+           "network": network_id, "stake": stake_of(tx_byte),
            "attestation": {"peer_id": att["peer_id"], "service_pubkey": att["service_pubkey"],
                            "network_id": att["network_id"], "expiry_ms": att["expiry_ms"],
                            "signature": att["signature"]},
            "prekeys": "0x"}
     t = {"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": CONFIG_TYPE_HASH}
-    return cell(t, to_hex(csrchain.encode_registry(reg)), "0x" + f"{tx_byte:02x}" * 32, 0)
+    return cell(t, to_hex(csrchain.encode_registry(reg)), "0x" + f"{tx_byte:02x}" * 32, 0,
+                lock=dual_lock(svc_n))
 
 
 def test_scan_registry(env):
@@ -143,15 +149,17 @@ def test_scan_registry(env):
              "0x" + "06" * 32, 0),                                           # not a registry
         registry_cell("QmE", 5, tx_byte=7),
     ]
+    for tx_byte, owner in ((1, 1), (2, 1), (3, 2), (4, 3), (5, 4), (7, 5)):
+        fc.live[stake_of(tx_byte)] = dao_live(owner, 10_000)
     res = configcell.scan_registry(st, fc, env["c"], MON_PK)
-    assert res == {"valid": 3, "invalid": 4}
+    assert res == {"valid": 3, "invalid": 4, "no_stake": 0}
     assert st.registration_for("QmA") == {"peer_id": "QmA", "service_pubkey": pk(1),
                                           "expiry_ms": NOW * 1000 + 7 * 86400000,
                                           "outpoint": "0x" + "01" * 32 + ":0"}
     assert st.registration_for("QmB") is None and st.registration_for("QmD") is None
     assert st.registration_for("QmE")["service_pubkey"] == pk(5)
     fc.cells = []
-    assert configcell.scan_registry(st, fc, env["c"], MON_PK) == {"valid": 0, "invalid": 0}
+    assert configcell.scan_registry(st, fc, env["c"], MON_PK) == {"valid": 0, "invalid": 0, "no_stake": 0}
     assert st.registration_for("QmA") is None
 
 
@@ -175,9 +183,12 @@ class Clock:
         return self.t
 
 
+STAKE_OK = "0x" + "5e" * 32 + ":1"
+
+
 def attest_body(n, peer, network="testnet"):
     p = pk(n)
-    return {"peer_id": peer, "service_pubkey": p, "network": network,
+    return {"peer_id": peer, "service_pubkey": p, "network": network, "stake": STAKE_OK,
             "binding_sig": ping.sign(sk(n), ping.binding_message(peer, p, network))}
 
 
@@ -194,6 +205,7 @@ def eligible_runner(st, n, peer, ok_probes=1, ts=NOW - 600):
 def test_attest(env):
     fc, st = env["fc"], env["st"]
     add_config_cell(fc, clock_ms=NOW * 1000)
+    fc.live[STAKE_OK] = dao_live(1, 10_000)
     w = configcell.ConfigCellWriter(st, fc, env["c"], MON)
     att = configcell.Attester(st, env["c"], MON, w)
     eligible_runner(st, 1, "QmA")
@@ -213,6 +225,7 @@ def test_attest(env):
 def test_attest_refusals(env):
     fc, st = env["fc"], env["st"]
     add_config_cell(fc, clock_ms=NOW * 1000)
+    fc.live[STAKE_OK] = dao_live(3, 10_000)
     w = configcell.ConfigCellWriter(st, fc, env["c"], MON)
     att = configcell.Attester(st, env["c"], MON, w)
     assert att.handle_attest({"peer_id": "x"}, "ip", NOW) == (400, {"error": "bad_request"})
@@ -235,6 +248,7 @@ def test_attest_over_api(env):
     from csrmon import api as api_mod
     fc, st = env["fc"], env["st"]
     add_config_cell(fc, clock_ms=NOW * 1000)
+    fc.live[STAKE_OK] = dao_live(1, 10_000)
     w = configcell.ConfigCellWriter(st, fc, env["c"], MON)
     eligible_runner(st, 1, "QmA")
     a = api_mod.Api(st, env["c"], MON, chain=fc, clock=lambda: NOW,

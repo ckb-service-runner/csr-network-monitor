@@ -36,6 +36,9 @@ class RpcChain:
             raise RpcError(f"{method}: no result")
         return msg["result"]
 
+    def get_live_cell(self, tx_hash, index):
+        return self.call("get_live_cell", [{"tx_hash": tx_hash, "index": hex(index)}, True])
+
     def tip(self):
         h = self.call("get_tip_header", [])
         try:

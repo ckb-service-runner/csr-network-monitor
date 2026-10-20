@@ -124,12 +124,13 @@ def test_nodes_endpoint(env):
     status, _, a = call(env, "GET", "/v1/nodes/QmA")
     assert status == 200
     assert set(a) == {"peer_id", "rank", "of", "availability", "check_type", "attestation",
-                      "last_check_at"}
+                      "stake", "last_check_at"}
     assert a["peer_id"] == "QmA" and a["rank"] == 1 and a["of"] == 2
     assert a["availability"] == {"d7": round(139 / 144, 4), "d30": round(139 / 144, 4),
                                  "d365": round(139 / 144, 4)}
     assert a["check_type"] == "p2p_verified"
     assert a["attestation"] == {"status": "none", "expiry": None}
+    assert a["stake"] == {"status": "none", "capacity_ckb": None, "outpoint": None}
     assert a["last_check_at"] == NOW - 600
     b = call(env, "GET", "/v1/nodes/QmB")[2]
     assert b["rank"] == 2 and b["check_type"] == "challenge_only"
