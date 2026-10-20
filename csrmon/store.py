@@ -33,6 +33,10 @@ create table if not exists epochs(
 create table if not exists registrations(
   peer_id text, service_pubkey text, expiry_ms integer, outpoint text);
 create index if not exists registrations_peer on registrations(peer_id);
+create table if not exists registry_stakes(
+  peer_id text, service_pubkey text, reg_outpoint text, expiry_ms integer, stake_outpoint text,
+  status text, capacity_ckb integer, reason text);
+create index if not exists registry_stakes_peer on registry_stakes(peer_id);
 create table if not exists issued_attestations(
   id integer primary key autoincrement, peer_id text, service_pubkey text, issued_at integer,
   attestation text);
@@ -182,6 +186,32 @@ class Store:
         return self._one(
             "select peer_id, service_pubkey, expiry_ms, outpoint from registrations"
             " where peer_id=? order by expiry_ms desc limit 1", (peer_id,))
+
+    _STAKE_KEYS = ("peer_id", "service_pubkey", "reg_outpoint", "expiry_ms", "stake_outpoint",
+                   "status", "capacity_ckb", "reason")
+
+    def set_stakes(self, rows):
+        with self._lock:
+            self._con.execute("begin")
+            try:
+                self._con.execute("delete from registry_stakes")
+                self._con.executemany(
+                    f"insert into registry_stakes({', '.join(self._STAKE_KEYS)}) values(?,?,?,?,?,?,?,?)",
+                    [tuple(r[k] for k in self._STAKE_KEYS) for r in rows])
+                self._con.execute("commit")
+            except Exception:
+                self._con.execute("rollback")
+                raise
+
+    def stake_for(self, peer_id):
+        return self._one(
+            f"select {', '.join(self._STAKE_KEYS)} from registry_stakes where peer_id=?"
+            " order by status='deposited' desc, expiry_ms desc, reg_outpoint asc limit 1", (peer_id,))
+
+    def stake_user(self, stake_outpoint):
+        r = self._one("select peer_id from registry_stakes where stake_outpoint=?"
+                      " and status='deposited' limit 1", (stake_outpoint,))
+        return r["peer_id"] if r else None
 
     def save_issued(self, peer_id, service_pubkey, *, issued_at, attestation):
         with self._lock:

@@ -15,6 +15,9 @@ from csrmon import configcell, crypto, csrchain, molecule, ping, stat_cell
 from csrmon.hashing import blake160, from_hex, to_hex
 from fakes import FakeRpcServer, cell
 from fakes_v2 import FakeChainV2, FakeCSR, peer_entry
+from fakes_stake import FakeChainStake, dao_live, dual_lock
+
+STAKE = "0x" + "5e" * 32 + ":0"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIGHASH = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
@@ -31,6 +34,9 @@ class Rpc(FakeRpcServer):
     def dispatch(self, method, params):
         if method == "get_peers":
             return self.chain.peers
+        if method == "get_live_cell":
+            op = params[0]
+            return self.chain.get_live_cell(op["tx_hash"], int(op["index"], 16))
         return super().dispatch(method, params)
 
 
@@ -85,7 +91,7 @@ def test_end_to_end(tmp_path):
     mon_secret = bytes.fromhex((data / "k.key").read_text().strip()[2:])
     mon_pk = to_hex(crypto.pubkey_from_secret(mon_secret))
 
-    fc = FakeChainV2(tip=12_000_000)
+    fc = FakeChainStake(tip=12_000_000)
     lock = {"code_hash": SIGHASH, "hash_type": "type", "args": to_hex(blake160(from_hex(mon_pk)))}
     ctype = configcell.config_type_script(CONFIG_ARGS)
     fc.cells.append(cell(ctype, to_hex(csrchain.config_cell_data(from_hex(mon_pk), 1_000)),
@@ -112,13 +118,14 @@ def test_end_to_end(tmp_path):
     att = csrchain.sign_attestation(mon_secret, peer_id="QmInbound", service_pubkey=inbound.service_pubkey,
                                     network="testnet", expiry_ms=1_900_000_000_000)
     reg = {"peer_id": "QmInbound", "service_pubkey": inbound.service_pubkey,
-           "float_lock_hash": "0x" + "77" * 32, "network": 1,
+           "payout_lock_hash": "0x" + "77" * 32, "network": 1, "stake": STAKE,
            "attestation": {k: att[k] for k in ("peer_id", "service_pubkey", "network_id", "expiry_ms",
                                                 "signature")},
            "prekeys": "0x"}
     fc.cells.append(cell({"code_hash": REGISTRY_CODE, "hash_type": "data2",
                           "args": configcell.config_type_hash(CONFIG_ARGS)},
-                         to_hex(csrchain.encode_registry(reg)), "0x" + "e1" * 32, 0))
+                         to_hex(csrchain.encode_registry(reg)), "0x" + "e1" * 32, 0, lock=dual_lock(1)))
+    fc.live[STAKE] = dao_live(1, 10_000)
     rpc = Rpc(fc)
     rpc.__enter__()
     port = free_port()
@@ -153,6 +160,7 @@ def test_end_to_end(tmp_path):
 
         # attestation for the probed inbound node
         body = {"peer_id": "QmInbound", "service_pubkey": inbound.service_pubkey, "network": "testnet",
+                "stake": STAKE,
                 "binding_sig": ping.sign(sk(1), ping.binding_message("QmInbound", inbound.service_pubkey,
                                                                      "testnet"))}
         status, att2 = http("POST", url + "/v1/attest", body)

@@ -378,12 +378,16 @@ class Api:
         else:
             att = {"status": "valid" if reg["expiry_ms"] > now * 1000 else "expired",
                    "expiry": reg["expiry_ms"] // 1000}
+        st = self.store.stake_for(peer_id)
+        stake = ({"status": "none", "capacity_ckb": None, "outpoint": None} if st is None else
+                 {"status": st["status"], "capacity_ckb": st["capacity_ckb"],
+                  "outpoint": st["stake_outpoint"]})
         return {"peer_id": peer_id, "rank": item["rank"],
                 "of": sum(1 for i in ranking if i.get("rank") is not None),
                 "availability": {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
                                  "d365": round(item["a365"], 4)},
                 "check_type": "p2p_verified" if p2p else "challenge_only",
-                "attestation": att, "last_check_at": int(lp["ts"]) if lp else 0}
+                "attestation": att, "stake": stake, "last_check_at": int(lp["ts"]) if lp else 0}
 
     @staticmethod
     def _raise_or(status, out):
