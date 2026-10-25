@@ -7,13 +7,12 @@ import random
 import socket
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from . import geo as geo_mod
-from . import protocol
+from . import netutil, protocol
+from .schedule import planned_time, schedule_secret
 from .hashing import from_hex
 
 _STR_FIELDS = ("nonce", "peer_id", "tip_hash", "block_hash", "csr_version", "ckb_version", "sig")
@@ -76,21 +75,17 @@ def evaluate_response(challenge, response, *, service_pubkey, peer_id, chain, el
             "ckb_version": response["ckb_version"]}
 
 
+PROBE_MAX_BYTES = 16384
+
+
 def _default_post(url, body, timeout):
-    req = urllib.request.Request(url, data=body, method="POST",
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as e:
-        return e.code, b""
+    return netutil.fetch_status(url, body, timeout=timeout, max_bytes=PROBE_MAX_BYTES)
 
 
 def _is_timeout(e) -> bool:
-    if isinstance(e, (socket.timeout, TimeoutError)):
-        return True
-    return isinstance(e, urllib.error.URLError) and isinstance(
-        e.reason, (socket.timeout, TimeoutError))
+    if isinstance(e, netutil.FetchError):
+        return e.timed_out
+    return isinstance(e, (socket.timeout, TimeoutError))
 
 
 class Prober:
@@ -108,20 +103,18 @@ class Prober:
         self.started_at = clock()
         self.paused = False
         self._lock = threading.RLock()
-        self._planned = {}
+        self._schedule_key = schedule_secret(monitor_secret)
         self._open = {}          # runner_id -> (challenge, opened_at, ip)
         self._next_slot = {}     # runner_id -> first push slot not yet closed
         self._paused_slots = set()
 
     # ---- helpers ----
     def planned_time(self, runner_id, slot) -> float:
-        with self._lock:
-            key = (runner_id, slot)
-            if key not in self._planned:
-                i, j = self.config.probe_interval_s, self.config.probe_jitter_s
-                t = slot * i + i / 2 + self.rng.uniform(-j, j)
-                self._planned[key] = min(max(t, slot * i), (slot + 1) * i - 1e-3)
-            return self._planned[key]
+        return planned_time(self._schedule_key, runner_id, slot, self.config.probe_interval_s,
+                            self.config.probe_jitter_s)
+
+    def _endpoint_allowed(self, ip) -> bool:
+        return (self.config.allow_insecure_endpoints or ip is None or netutil.public_ip(ip))
 
     def _new_challenge(self, now):
         mtip = self.chain.tip()[0]
@@ -175,6 +168,8 @@ class Prober:
         ip = self._resolve_ip(host)
         if self.paused:
             return self._record(rid, now, "pull", "excluded", "monitor_paused", ip)
+        if not self._endpoint_allowed(ip):
+            return self._record(rid, now, "pull", "fail", "unreachable", ip)
         challenge = self._new_challenge(now)
         url = runner["endpoint"].rstrip("/") + "/csr/v1/probe"
         t0 = time.monotonic()

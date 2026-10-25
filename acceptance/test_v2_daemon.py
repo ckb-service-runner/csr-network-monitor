@@ -129,7 +129,7 @@ def test_end_to_end(tmp_path):
     rpc = Rpc(fc)
     rpc.__enter__()
     port = free_port()
-    write_cfg(**base, node_rpc=f'"{rpc.url}"', listen_port=port, probe_interval_s=3, probe_jitter_s=0,
+    write_cfg(**base, allow_insecure_endpoints="true", node_rpc=f'"{rpc.url}"', listen_port=port, probe_interval_s=3, probe_jitter_s=0,
               probe_timeout_s=3, aggregate_interval_s=1, discovery_interval_s=1, ping_port=inbound.port,
               config_type_args=f'"{CONFIG_ARGS}"', csr_registry_code_hash=f'"{REGISTRY_CODE}"',
               stat_cell_sighash_dep_tx=f'"0x{"5d" * 32}"', clock_update_interval_s=2)

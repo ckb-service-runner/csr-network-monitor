@@ -23,7 +23,11 @@ _STATIC_TYPES = {".html": "text/html; charset=utf-8", ".mjs": "text/javascript; 
                  ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".svg": "image/svg+xml"}
 _JSON_HEADERS = {"Content-Type": "application/json; charset=utf-8",
-                 "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}
+                 "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store",
+                 "X-Content-Type-Options": "nosniff"}
+_CSP = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+
+_POST_ROUTES = ("/v1/checkin", "/v1/answer", "/v1/attest")
 
 
 class _Reply(Exception):
@@ -54,6 +58,7 @@ class Api:
         self._lock = threading.Lock()
         self._cache = {}
         self._hits = {}
+        self._post_hits = {}
 
     def invalidate(self):
         with self._lock:
@@ -69,19 +74,21 @@ class Api:
                     return last
         return client_ip
 
-    def _rate_check(self, ip):
+    def _rate_check(self, ip, post=False):
         now = self.clock()
+        hits = self._post_hits if post else self._hits
+        limit = self.config.rate_limit_post_per_min if post else self.config.rate_limit_per_min
         with self._lock:
-            dq = self._hits.setdefault(ip, deque())
+            dq = hits.setdefault(ip, deque())
             while dq and dq[0] <= now - 60:
                 dq.popleft()
-            if len(dq) >= self.config.rate_limit_per_min:
+            if len(dq) >= limit:
                 retry = max(1, math.ceil(dq[0] + 60 - now))
                 raise _err(429, "rate_limited", {"Retry-After": str(retry)})
             dq.append(now)
-            if len(self._hits) > 10000:
-                for k in [k for k, v in self._hits.items() if not v or v[-1] <= now - 60]:
-                    del self._hits[k]
+            if len(hits) > 10000:
+                for k in [k for k, v in hits.items() if not v or v[-1] <= now - 60]:
+                    del hits[k]
 
     def _ranking(self, today):
         now = self.clock()
@@ -117,6 +124,8 @@ class Api:
             ip = self._client_ip(headers, client_ip)
             if method == "GET":
                 self._rate_check(ip)
+            elif method == "POST" and path.rstrip("/") in _POST_ROUTES:
+                self._rate_check(ip, post=True)
             obj = self._route(method, path, parse_qs(parts.query), body, ip)
             return self._out(200, obj, {})
         except _Reply as r:
@@ -140,7 +149,9 @@ class Api:
         except OSError:
             return None
         ctype = _STATIC_TYPES[os.path.splitext(name)[1]]
-        return 200, {"Content-Type": ctype, "Cache-Control": "no-cache"}, data
+        return 200, {"Content-Type": ctype, "Cache-Control": "no-cache",
+                     "Content-Security-Policy": _CSP, "X-Content-Type-Options": "nosniff",
+                     "X-Frame-Options": "DENY"}, data
 
     @staticmethod
     def _out(status, obj, extra, json_body=True):
@@ -397,11 +408,15 @@ class Api:
 
 
 class ApiServer:
-    def __init__(self, api, host, port):
+    def __init__(self, api, host, port, *, timeout_s=10, max_connections=64):
         self.api = api
+        slots = threading.BoundedSemaphore(max_connections)
+        busy = (b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n"
+                b"Content-Length: 0\r\n\r\n")
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            timeout = timeout_s
 
             def _serve(self):
                 try:
@@ -427,7 +442,25 @@ class ApiServer:
             def log_message(self, *args):
                 pass
 
-        self.httpd = ThreadingHTTPServer((host, port), Handler)
+        class Server(ThreadingHTTPServer):
+            def process_request(self, request, client_address):
+                if not slots.acquire(blocking=False):
+                    try:
+                        request.settimeout(1)
+                        request.sendall(busy)
+                    except OSError:
+                        pass
+                    self.shutdown_request(request)
+                    return
+                super().process_request(request, client_address)
+
+            def process_request_thread(self, request, client_address):
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    slots.release()
+
+        self.httpd = Server((host, port), Handler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self._thread = None

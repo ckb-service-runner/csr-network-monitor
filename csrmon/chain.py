@@ -1,6 +1,9 @@
 """CKB JSON-RPC client (ChainView implementation) and tip cross-check."""
 import json
-import urllib.request
+
+from . import netutil
+
+RPC_MAX_BYTES = 4 * 1024 * 1024
 
 
 class RpcError(Exception):
@@ -17,11 +20,9 @@ class RpcChain:
         self._id += 1
         body = json.dumps({"jsonrpc": "2.0", "id": self._id, "method": method,
                            "params": params}).encode()
-        req = urllib.request.Request(self.url, data=body, method="POST",
-                                     headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read()
+            raw = netutil.fetch(self.url, body, timeout=self.timeout, max_bytes=RPC_MAX_BYTES,
+                                headers={"Content-Type": "application/json"})
         except Exception as e:
             raise RpcError(f"{method}: {type(e).__name__}: {e}") from None
         try:

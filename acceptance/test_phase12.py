@@ -103,7 +103,7 @@ def test_pyproject():
     p = tomllib.loads(read("pyproject.toml"))
     proj = p["project"]
     assert proj["name"] == "csr-network-monitor" and proj["version"] == "0.1.0"
-    assert proj.get("dependencies", []) == []
+    assert proj.get("dependencies", []) == ["coincurve>=19"]
     assert proj["scripts"]["csrmon"] == "csrmon.cli:main"
     assert "3.11" in proj["requires-python"]
 

@@ -10,7 +10,8 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from . import geo as geo_mod
-from . import ping, protocol
+from . import netutil, ping, protocol
+from .schedule import planned_time, schedule_secret
 from .hashing import from_hex
 from .prober import _default_post, _is_timeout, slot_of
 
@@ -18,6 +19,8 @@ _EVAL_KEYS = ("peer_id", "service_pubkey", "tip_number", "lag", "in_sync", "csr_
               "node_version", "r2_state", "ping_mode")
 _STATUS_REASONS = {400: "rejected_400", 403: "bad_monitor_key", 409: "replay",
                    429: "rate_limited", 503: "node_unavailable"}
+
+MAX_OPEN_CHALLENGES = 10000
 
 __all__ = ["slot_of", "evaluate_answer", "CsrProber"]
 
@@ -74,7 +77,7 @@ class CsrProber:
         self.started_at = clock()
         self.paused = False
         self._lock = threading.RLock()
-        self._planned = {}
+        self._schedule_key = schedule_secret(monitor_secret)
         self._open = {}          # nonce -> entry dict of an outbound challenge
         self._next_slot = {}     # runner_id -> first outbound slot not yet closed
         self._paused_slots = set()
@@ -90,13 +93,8 @@ class CsrProber:
             return any(p["node_id"] == peer_id for p in self._peers)
 
     def planned_time(self, runner_id, slot) -> float:
-        with self._lock:
-            key = (runner_id, slot)
-            if key not in self._planned:
-                i, j = self.config.probe_interval_s, self.config.probe_jitter_s
-                t = slot * i + i / 2 + self.rng.uniform(-j, j)
-                self._planned[key] = min(max(t, slot * i), (slot + 1) * i - 1e-3)
-            return self._planned[key]
+        return planned_time(self._schedule_key, runner_id, slot, self.config.probe_interval_s,
+                            self.config.probe_jitter_s)
 
     def _new_challenge(self, now):
         tip = self.chain.tip()[0]
@@ -167,6 +165,12 @@ class CsrProber:
 
     # ---- inbound ----
     def probe_endpoint(self, endpoint, now, expected_peer_id=None) -> dict:
+        if not self.config.allow_insecure_endpoints:
+            ip = self._resolve_ip(endpoint)
+            if ip is not None and not netutil.public_ip(ip):
+                out = _fail("unreachable")
+                out["latency_ms"] = None
+                return out
         challenge = self._new_challenge(now)
         url = endpoint.rstrip("/") + "/v1/challenge"
         body = json.dumps(challenge, separators=(",", ":")).encode()
@@ -323,11 +327,24 @@ class CsrProber:
         if slot is None:
             return 429, {"error": "slot_done"}
         deadline = self.config.answer_deadline_s
-        challenge = self._new_challenge(now)
-        with self._lock:
+
+        def open_check():
             if any(e["runner_id"] == rid and now - e["opened_at"] < deadline
                    for e in self._open.values()):
                 return 429, {"error": "challenge_open"}
+            if len(self._open) >= MAX_OPEN_CHALLENGES:
+                return 503, {"error": "too_many_open_challenges"}
+            return None
+
+        with self._lock:        # cheap checks first: no chain RPC for a refused check-in
+            refused = open_check()
+        if refused:
+            return refused
+        challenge = self._new_challenge(now)
+        with self._lock:
+            refused = open_check()
+            if refused:
+                return refused
             self._open[challenge["nonce"]] = {
                 "runner_id": rid, "peer_id": c["peer_id"], "service_pubkey": c["service_pubkey"],
                 "ip": ip, "opened_at": now, "slot": slot, "challenge": challenge}

@@ -43,7 +43,7 @@ For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig",
 | checkin | 400 | `bad_request`, `wrong_network` | malformed body / other network |
 | checkin | 401 | `bad_signature` | binding signature invalid |
 | checkin | 413 | `too_large` | body too large |
-| checkin | 429 | `slot_done`, `challenge_open`, `rate_limited` | the slot already has an outcome / a challenge is open / too many requests |
+| checkin | 429 | `slot_done`, `challenge_open`, `rate_limited` | the slot already has an outcome / a challenge is open / too many requests (`rate_limit_post_per_min`, default 20 per client IP, counted separately from the GET limit `rate_limit_per_min` and checked before signatures or RPC calls; `Retry-After` is set) |
 | checkin | 503 | `monitor_paused`, `unavailable` | tip cross-check failed / not available |
 | answer | 200 | `{"result":"ok"}` | accepted (CSR treats HTTP 200 as accepted) |
 | answer | 400 | `bad_request` | malformed |
@@ -66,7 +66,7 @@ Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = o
 | 403 | `stake_invalid` (with `reason`) | the stake is not a deposited DAO cell (`spent`, `not_found`, `not_dao`, `not_deposit`, `too_small`) |
 | 403 | `stake_in_use` | the deposit backs a registration of another peer |
 | 413 | `too_large` | body too large |
-| 429 | `rate_limited` | too many requests |
+| 429 | `rate_limited` | too many requests (`rate_limit_post_per_min`, shared by `/v1/checkin`, `/v1/answer` and `/v1/attest`) |
 | 503 | `chain_unavailable`, `unavailable` | config cell clock unreadable / attestations not configured |
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`

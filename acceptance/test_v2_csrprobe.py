@@ -37,7 +37,7 @@ class Clock:
 
 def make(tmp_path, clock, fc=None, **extra):
     base = {"probe_interval_s": I, "probe_jitter_s": 60, "probe_timeout_s": 3,
-            "answer_deadline_s": 60}
+            "answer_deadline_s": 60, "allow_insecure_endpoints": "true"}
     base.update(extra)
     lines = ['network = "testnet"', 'public_url = "https://m.example"',
              f'db_path = "{tmp_path}/t.db"', f'key_path = "{tmp_path}/k.key"']
@@ -166,8 +166,9 @@ def test_discover_p2p_mismatch_and_non_csr(tmp_path):
     [res] = p.discover([{"node_id": "QmX", "ip": "10.9.9.9",
                          "endpoint": f"http://127.0.0.1:{closed_port()}"}], now=S + 200)
     assert res["result"] == "fail" and res["failure_reason"] == "unreachable"
-    assert st.discovery_get("10.9.9.9") == {"ip": "10.9.9.9", "node_id": "QmX",
-                                            "last_try": S + 200, "last_ok": None}
+    got = st.discovery_get("10.9.9.9")
+    assert got.pop("ip_hash") != "10.9.9.9"
+    assert got == {"node_id": "QmX", "last_try": S + 200, "last_ok": None}
     p.paused = True
     assert p.discover([{"node_id": "QmY", "ip": "1.1.1.1", "endpoint": "http://1.1.1.1:1"}], now=S) == []
 

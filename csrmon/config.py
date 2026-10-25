@@ -37,6 +37,9 @@ class Config:
     p2p_check_timeout_s: int = 120
     p2p_interval_s: int = 86400
     rate_limit_per_min: int = 60
+    rate_limit_post_per_min: int = 20
+    http_timeout_s: int = 10
+    http_max_connections: int = 64
     trusted_proxies: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
     min_stake_ckb: int = 10000
     gate_min_days: int = 365
@@ -80,7 +83,8 @@ _MIN = {
     "listen_port": 0, "probe_interval_s": 1, "probe_jitter_s": 0,
     "probe_workers": 1, "sync_threshold": 0, "crosscheck_interval_s": 1,
     "aggregate_interval_s": 1, "p2p_check_timeout_s": 1, "p2p_interval_s": 1,
-    "rate_limit_per_min": 1, "gate_min_days": 1, "gate_min_runners": 1,
+    "rate_limit_per_min": 1, "rate_limit_post_per_min": 1, "http_timeout_s": 1,
+    "http_max_connections": 1, "gate_min_days": 1, "gate_min_runners": 1,
     "provisional_days": 0, "probe_retention_days": 1,
     "ping_port": 1, "discovery_interval_s": 1, "discovery_backoff_s": 1,
     "answer_deadline_s": 1, "reachable_window_s": 1, "clock_update_interval_s": 1,

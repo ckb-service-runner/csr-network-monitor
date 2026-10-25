@@ -1,5 +1,9 @@
 """SQLite store (thread-safe, WAL)."""
+import hashlib
 import json
+import logging
+import os
+import secrets
 import sqlite3
 import statistics
 import threading
@@ -42,7 +46,7 @@ create table if not exists issued_attestations(
   attestation text);
 create index if not exists issued_key on issued_attestations(peer_id, service_pubkey);
 create table if not exists discovery(
-  ip text primary key, node_id text, last_try integer, last_ok integer);
+  ip_hash text primary key, node_id text, last_try integer, last_ok integer);
 create table if not exists meta(key text primary key, value text);
 """
 
@@ -71,14 +75,33 @@ def _whole(x):
     return int(x) if float(x) == int(x) else x
 
 
+log = logging.getLogger("csrmon")
+
+
+def _private_file(path):
+    """Create the database file with mode 0600, or tighten an existing one."""
+    if path == ":memory:" or str(path).startswith("file:"):
+        return
+    if not os.path.exists(path):
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+    elif os.stat(path).st_mode & 0o077:
+        os.chmod(path, 0o600)
+        log.info("database file %s was readable by others; mode set to 0600", path)
+
+
 class Store:
     def __init__(self, path):
         self._lock = threading.RLock()
+        _private_file(path)
         self._con = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._con.row_factory = sqlite3.Row
         with self._lock:
             self._con.execute("pragma journal_mode=wal")
             self._con.execute("pragma busy_timeout=5000")
+            dcols = {r[1] for r in self._con.execute("pragma table_info(discovery)")}
+            if dcols and "ip_hash" not in dcols:
+                # old rows hold plain IPs; the table is only a back-off cache
+                self._con.execute("drop table discovery")
             self._con.executescript(_SCHEMA)
             cols = {r[1] for r in self._con.execute("pragma table_info(probes)")}
             if "p2p_verified" not in cols:
@@ -228,16 +251,26 @@ class Store:
             return None
         return {"issued_at": r["issued_at"], "attestation": json.loads(r["attestation"])}
 
+    def _discovery_key(self, ip):
+        with self._lock:
+            salt = self.get_meta("discovery_salt")
+            if salt is None:
+                salt = secrets.token_hex(32)
+                self.set_meta("discovery_salt", salt)
+        return hashlib.sha256(bytes.fromhex(salt) + str(ip).encode()).hexdigest()
+
     def discovery_mark(self, ip, node_id, *, ts, ok):
+        key = self._discovery_key(ip)
         with self._lock:
             self._con.execute(
-                "insert into discovery(ip, node_id, last_try, last_ok) values(?,?,?,?)"
-                " on conflict(ip) do update set node_id=excluded.node_id,"
+                "insert into discovery(ip_hash, node_id, last_try, last_ok) values(?,?,?,?)"
+                " on conflict(ip_hash) do update set node_id=excluded.node_id,"
                 " last_try=excluded.last_try, last_ok=coalesce(excluded.last_ok, last_ok)",
-                (ip, node_id, ts, ts if ok else None))
+                (key, node_id, ts, ts if ok else None))
 
     def discovery_get(self, ip):
-        return self._one("select ip, node_id, last_try, last_ok from discovery where ip=?", (ip,))
+        return self._one("select ip_hash, node_id, last_try, last_ok from discovery"
+                         " where ip_hash=?", (self._discovery_key(ip),))
 
     # ---- probes ----
     def record_probe(self, runner_id, *, ts, slot, mode, result, failure_reason=None,
