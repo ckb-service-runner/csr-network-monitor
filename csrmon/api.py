@@ -17,7 +17,7 @@ from .store import add_days, day_of, day_start
 MAX_BODY = 16384
 CACHE_TTL_S = 30
 _RANK_KEYS = ("runner_id", "rank", "score", "provisional", "status", "flags", "a7", "a30",
-              "a365", "country", "region", "asn", "asn_peers")
+              "a365", "country", "region", "asn", "asn_peers", "stake_status")
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _STATIC_TYPES = {".html": "text/html; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
                  ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -90,7 +90,8 @@ class Api:
             hit = self._cache.get(key)
             if hit and now - hit[0] < CACHE_TTL_S:
                 return hit[1]
-        ranking = scoring.rank_runners(self.store, today, self.config.provisional_days)
+        ranking = scoring.rank_runners(self.store, today, self.config.provisional_days,
+                                        scoring.stake_required(self.config))
         summary = scoring.network_summary(self.store, today, self.config, ranking)
         with self._lock:
             self._cache[key] = (now, ranking)

@@ -96,3 +96,6 @@
 
 Phase 1 – `/v1/nodes/{peer_id}` answers 200 for every known runner or registry row; 404 `unknown_node` otherwise.
 - Changed tests: `acceptance/test_v2_api.py::test_nodes_endpoint` (new `provisional` key; provisional node now 200 with `rank: null`; unknown peer is 404 `unknown_node`) and `acceptance/test_v2_daemon.py` (provisional inbound node now 200 with `rank: null`, `provisional: true`).
+
+Phase 2 – `scoring.stake_required(config)`; `rank_runners(..., require_stake=False)` adds `stake_status` to every item (stake row status if its service key matches case-insensitively, else `none`). In registry mode only `deposited` items are ranked; `runners.status` is never changed. `Api._ranking`, `network_summary`, `epochs.build_epoch` and `daemon` pass `require_stake=stake_required(config)`; `build_epoch` also omits non-deposited items from the leaves. `stake_status` added to `_RANK_KEYS`; documented in `docs/PROTOCOL.md`.
+- Changed test: `acceptance/test_phase8.py::test_runners_paging` expects the new `stake_status` key in runner items.

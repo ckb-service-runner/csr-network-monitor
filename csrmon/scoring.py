@@ -46,16 +46,28 @@ def runner_metrics(store, runner_id, today, provisional_days=7, runner=None) -> 
     return m
 
 
-def rank_runners(store, today, provisional_days=7) -> list:
+def stake_required(config) -> bool:
+    return bool(config.csr_registry_code_hash and config.config_type_args)
+
+
+def _stake_status(store, runner) -> str:
+    row = store.stake_for(runner["peer_id"])
+    if row and str(row["service_pubkey"]).lower() == str(runner["service_pubkey"] or "").lower():
+        return row["status"]
+    return "none"
+
+
+def rank_runners(store, today, provisional_days=7, require_stake=False) -> list:
     items = []
     for r in store.list_runners(("active",)):
         m = runner_metrics(store, r["runner_id"], today, provisional_days, runner=r)
         m.update(runner_id=r["runner_id"], rank=None, status=r["status"], flags=list(r["flags"]),
                  country=r["country"], region=r["region"], asn=r["asn"],
-                 first_seen=r["first_seen"])
+                 first_seen=r["first_seen"], stake_status=_stake_status(store, r))
         items.append(m)
     ranked = [i for i in items
-              if not i["provisional"] and not any(f in i["flags"] for f in _BAD_FLAGS)]
+              if not i["provisional"] and not any(f in i["flags"] for f in _BAD_FLAGS)
+              and (not require_stake or i["stake_status"] == "deposited")]
     ranked.sort(key=lambda i: (-i["score"], i["first_seen"], i["runner_id"]))
     for n, i in enumerate(ranked, 1):
         i["rank"] = n
@@ -74,8 +86,8 @@ def rank_runners(store, today, provisional_days=7) -> list:
     return out
 
 
-def update_scores(store, today, provisional_days=7) -> list:
-    ranking = rank_runners(store, today, provisional_days)
+def update_scores(store, today, provisional_days=7, require_stake=False) -> list:
+    ranking = rank_runners(store, today, provisional_days, require_stake)
     for i in ranking:
         store.set_daily_score(i["runner_id"], today, i["score"])
     return ranking
@@ -104,7 +116,7 @@ def _largest_share(counts) -> float:
 
 def network_summary(store, today, config, ranking=None) -> dict:
     if ranking is None:
-        ranking = rank_runners(store, today, config.provisional_days)
+        ranking = rank_runners(store, today, config.provisional_days, stake_required(config))
     ranked = [i for i in ranking if i["rank"] is not None]
     provisional = sum(1 for i in ranking if i["provisional"])
     excluded = sum(1 for i in ranking if i["rank"] is None and not i["provisional"])

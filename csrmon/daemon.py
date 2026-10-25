@@ -98,7 +98,8 @@ class Daemon:
         today = day_of(now)
         self.store.aggregate_day(today)
         self.store.aggregate_day(add_days(today, -1))
-        scoring.update_scores(self.store, today, self.config.provisional_days)
+        scoring.update_scores(self.store, today, self.config.provisional_days,
+                              scoring.stake_required(self.config))
         self.api.invalidate()
 
     def _prune(self, now):

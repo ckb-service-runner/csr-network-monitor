@@ -142,7 +142,7 @@ def test_runners_paging(env):
     assert [i["rank"] for i in full["items"]] == list(range(1, 8))
     item = full["items"][0]
     assert set(item) == {"runner_id", "rank", "score", "provisional", "status", "flags",
-                         "a7", "a30", "a365", "country", "region", "asn", "asn_peers"}
+                         "a7", "a30", "a365", "country", "region", "asn", "asn_peers", "stake_status"}
     assert item["country"] == "DE" and item["asn"] == 3320 and item["asn_peers"] == 6
     seen, cursor = [], None
     while True:

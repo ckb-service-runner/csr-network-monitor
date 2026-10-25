@@ -184,8 +184,10 @@ def build_epoch(store, chain, secret, config, n, *, now):
         prev_hash = ckb_blake2b(from_hex(prev["data_hex"]))
     else:
         prev_hash = b"\x00" * 32
-    ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days)
-    items = sorted((i for i in ranking if i["first_seen"] < end),
+    ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days,
+                                    scoring.stake_required(config))
+    items = sorted((i for i in ranking if i["first_seen"] < end
+                    and (not scoring.stake_required(config) or i["stake_status"] == "deposited")),
                    key=lambda i: from_hex(i["runner_id"]))
     leaves = []
     for i in items:
