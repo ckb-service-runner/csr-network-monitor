@@ -4,7 +4,8 @@
 
 - Linux or WSL2 with systemd, Python ≥ 3.11 (no pip packages needed at runtime).
 - A **synced CKB full node** of the same network with JSON-RPC on localhost (`http://127.0.0.1:8114`) and the `Indexer` and `Chain` modules enabled. The monitor refuses non-loopback `node_rpc`.
-- Optional: a second node or provider for the tip cross-check, geolocation CSV files, a P2P helper.
+- Optional: a second node or provider for the tip cross-check, geolocation CSV files.
+- For the daily P2P check: the monitor's CKB node must accept inbound P2P connections from the internet (see "P2P address of the monitor node").
 
 ## Install
 
@@ -72,6 +73,30 @@ The map on the public page needs the **DB-IP City Lite** CSV (monthly release, f
 Coordinates are reduced to the centre of a 2° × 2° cell while the file is loaded; only that cell is stored per runner and published via `GET /v1/locations`. Without the file, runners are listed as "unknown" and do not appear on the map.
 
 The data is licensed **CC BY 4.0**; the public page shows the required credit to DB-IP. Refresh the file monthly (replace it and restart). Memory use: the snapped, merged ranges take roughly 50–150 MB for the full file; loading takes some seconds at start-up.
+
+## P2P address of the monitor node
+
+Runners connect their CKB node to the monitor's node; once a day the monitor reads `get_peers` of its node and checks each runner's peer (see docs/PROTOCOL.md, "Daily P2P check"). For this:
+
+1. Read the node ID and listen address of the monitor node:
+
+   ```sh
+   curl -s -H 'content-type: application/json' \
+     -d '{"id":1,"jsonrpc":"2.0","method":"local_node_info","params":[]}' http://127.0.0.1:8114 \
+     | jq '.result | {node_id, addresses}'
+   ```
+
+2. Build the public multiaddr from the **public** IP (or DNS name) and P2P port (default `8115`) and the `node_id`, e.g. `/ip4/203.0.113.10/tcp/8115/p2p/QmXyz…` (`/dns4/monitor.example.org/tcp/8115/p2p/QmXyz…` also works). Set it in the config and restart:
+
+   ```toml
+   p2p_public_address = "/ip4/203.0.113.10/tcp/8115/p2p/QmXyz..."
+   ```
+
+   It is published as `p2p_address` in `GET /v1/monitor`. The node ID changes if the node's `network/secret_key` changes; update the key then.
+3. The node's P2P port must be reachable from the internet (firewall, port forward; in the forwarded topology below the VPS forwards `8115`).
+4. Give the node enough slots for the runners: in `ckb.toml`, `[network] max_peers` and `max_outbound_peers` set the inbound capacity (`max_peers − max_outbound_peers`). Keep it comfortably above the number of runners plus normal peers, e.g. `max_peers = 250`, `max_outbound_peers = 8` for up to ~200 runners.
+
+`require_identity_proof` stays `false` during the rollout; see docs/PROTOCOL.md, "Identity requirement and rollout".
 
 ## Tip cross-check
 

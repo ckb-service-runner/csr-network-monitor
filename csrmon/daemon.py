@@ -8,7 +8,7 @@ from . import cli, configcell, crypto, epochs, keys, registry, scoring
 from .api import Api, ApiServer
 from .chain import RpcChain, TipCrossCheck
 from .geo import GeoDB, load_or_create_salt
-from .p2p import P2PChecker, P2PScheduler
+from .p2p import P2PScheduler
 from .csrprobe import CsrProber
 from .discovery import Discovery, parse_peers
 from .stat_cell import StatCellWriter
@@ -40,10 +40,7 @@ class Daemon:
         second = RpcChain(c.second_tip_source) if c.second_tip_source else None
         self.cross = TipCrossCheck(self.chain, second, c.sync_threshold)
         self.prober = CsrProber(self.store, self.chain, c, self.secret, geo=geo, salt=salt)
-        self.p2p = None
-        if c.p2p_check_cmd:
-            checker = P2PChecker(c.p2p_check_cmd, c.p2p_check_timeout_s, c.network)
-            self.p2p = P2PScheduler(self.store, self.chain, checker, c)
+        self.p2p = P2PScheduler(self.store, self.chain, c, paused=lambda: self.prober.paused)
         self.discovery = Discovery(self.store, c)
         self.cell_writer = self.attester = None
         if c.config_type_args:
@@ -98,7 +95,8 @@ class Daemon:
         today = day_of(now)
         self.store.aggregate_day(today)
         self.store.aggregate_day(add_days(today, -1))
-        scoring.update_scores(self.store, today, self.config.provisional_days)
+        scoring.update_scores(self.store, today, self.config.provisional_days,
+                              require_identity=self.config.require_identity_proof, now=now)
         self.api.invalidate()
 
     def _prune(self, now):
@@ -115,7 +113,10 @@ class Daemon:
     def _p2p_loop(self):
         while not self._stop.wait(5):
             try:
-                self.p2p.run_due()
+                for res in self.p2p.run_due():
+                    if res["result"] != "ok":
+                        log.info("p2p check %s: %s (%s)", res["runner_id"], res["result"],
+                                 res["reason"])
             except Exception:
                 log.exception("p2p task failed")
 
@@ -139,10 +140,8 @@ class Daemon:
             ["clock", c.clock_update_interval_s, self._clock],
         ]
         due = {t[0]: 0 for t in tasks}
-        p2p_thread = None
-        if self.p2p is not None:
-            p2p_thread = threading.Thread(target=self._p2p_loop, daemon=True)
-            p2p_thread.start()
+        p2p_thread = threading.Thread(target=self._p2p_loop, daemon=True)
+        p2p_thread.start()
         disc_thread = threading.Thread(target=self._discovery_loop, daemon=True)
         disc_thread.start()
         try:
@@ -167,8 +166,7 @@ class Daemon:
             except Exception:
                 log.exception("server stop failed")
             disc_thread.join(2)
-            if p2p_thread is not None:
-                p2p_thread.join(2)
+            p2p_thread.join(2)
             self.store.close()
         log.info("stopped")
         return 0

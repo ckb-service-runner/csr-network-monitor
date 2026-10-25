@@ -51,9 +51,9 @@ attest_cache_s = 3600          # re-issue the same attestation within this time
 # geo_asn_csv = "/var/lib/csr-network-monitor/geo/dbip-asn-lite.csv"
 # geo_city_csv = "/var/lib/csr-network-monitor/geo/dbip-city-lite.csv"
 
-# --- P2P full-node check (external helper, see docs/P2P_HELPER.md) ---
-# p2p_check_cmd = "/opt/csr-network-monitor/bin/p2p-helper"
-p2p_check_timeout_s = 120
+# --- node identity and the daily P2P check through this monitor's own node (docs/INSTALL.md) ---
+# p2p_public_address = "/ip4/203.0.113.7/tcp/8115/p2p/QmMonitorNodeId..."
+require_identity_proof = false
 p2p_interval_s = 86400
 
 # --- API ---

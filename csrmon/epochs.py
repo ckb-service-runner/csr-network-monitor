@@ -184,7 +184,9 @@ def build_epoch(store, chain, secret, config, n, *, now):
         prev_hash = ckb_blake2b(from_hex(prev["data_hex"]))
     else:
         prev_hash = b"\x00" * 32
-    ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days)
+    ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days,
+                                   require_identity=getattr(config, "require_identity_proof", False),
+                                   now=end - 1)
     items = sorted((i for i in ranking if i["first_seen"] < end),
                    key=lambda i: from_hex(i["runner_id"]))
     leaves = []

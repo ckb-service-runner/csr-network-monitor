@@ -12,7 +12,8 @@ create table if not exists runners(
   runner_id text primary key, service_pubkey text, peer_id text, p2p_pubkey text, reg_outpoint text,
   mode text, endpoint text, p2p_port integer, first_seen integer, last_seen integer, status text,
   flags text not null default '[]', ranking_opt_in integer, country text, region text, asn integer,
-  csr_version text, ckb_version text, loc_lat integer, loc_lon integer);
+  csr_version text, ckb_version text, loc_lat integer, loc_lon integer,
+  identity_proven_at integer);
 create table if not exists probes(
   runner_id text, ts integer, slot integer, mode text, result text, failure_reason text,
   latency_ms integer, tip_number integer, lag integer, in_sync integer, peers_out integer,
@@ -21,7 +22,7 @@ create table if not exists probes(
 create index if not exists probes_ts on probes(runner_id, ts);
 create table if not exists p2p_checks(
   id integer primary key autoincrement, runner_id text, ts integer, heights text, served integer,
-  latency_ms integer, peer_id_seen text, result text);
+  latency_ms integer, peer_id_seen text, result text, reason text);
 create index if not exists p2p_ts on p2p_checks(runner_id, ts);
 create table if not exists daily_stats(
   runner_id text, day text, probes_total integer, probes_ok integer, in_sync integer,
@@ -84,9 +85,12 @@ class Store:
             if "p2p_verified" not in cols:
                 self._con.execute("ALTER TABLE probes ADD COLUMN p2p_verified INTEGER")
             rcols = {r[1] for r in self._con.execute("pragma table_info(runners)")}
-            for col in ("loc_lat", "loc_lon"):
+            for col in ("loc_lat", "loc_lon", "identity_proven_at"):
                 if col not in rcols:
                     self._con.execute(f"ALTER TABLE runners ADD COLUMN {col} INTEGER")
+            pcols = {r[1] for r in self._con.execute("pragma table_info(p2p_checks)")}
+            if "reason" not in pcols:
+                self._con.execute("ALTER TABLE p2p_checks ADD COLUMN reason TEXT")
 
     def close(self):
         with self._lock:
@@ -160,6 +164,14 @@ class Store:
             flags.add(flag) if on else flags.discard(flag)
             self._con.execute("update runners set flags=? where runner_id=?",
                               (json.dumps(sorted(flags)), runner_id))
+
+    def set_identity(self, runner_id, *, p2p_pubkey, proven_at):
+        with self._lock:
+            self._con.execute("update runners set p2p_pubkey=?, identity_proven_at=? where runner_id=?",
+                              (p2p_pubkey, proven_at, runner_id))
+
+    def runners_with_peer(self, peer_id, statuses=("active",)):
+        return [r for r in self.list_runners(statuses) if r["peer_id"] == peer_id]
 
     def find_runner_by_peer(self, peer_id):
         return self._runner(self._one(
@@ -303,15 +315,16 @@ class Store:
                          (runner_id, slot)) is not None
 
     # ---- p2p ----
-    def record_p2p_check(self, runner_id, *, ts, heights, served, latency_ms, peer_id_seen, result):
+    def record_p2p_check(self, runner_id, *, ts, heights, served, latency_ms, peer_id_seen, result,
+                         reason=None):
         if result not in _P2P_RESULTS:
             raise ValueError(f"invalid p2p result {result!r}")
         with self._lock:
             self._con.execute(
                 "insert into p2p_checks(runner_id, ts, heights, served, latency_ms, peer_id_seen,"
-                " result) values(?,?,?,?,?,?,?)",
+                " result, reason) values(?,?,?,?,?,?,?,?)",
                 (runner_id, ts, json.dumps(list(heights)), served, latency_ms, peer_id_seen,
-                 result))
+                 result, reason))
 
     @staticmethod
     def _p2p(r):

@@ -85,7 +85,7 @@ def test_usage_errors():
 # ---------- packaging and docs ----------
 
 REQUIRED_FILES = ["README.md", "LICENSE", "pyproject.toml", "docs/PROTOCOL.md", "docs/INSTALL.md",
-                  "docs/P2P_HELPER.md", "config/monitor-testnet.toml", "config/monitor-mainnet.toml",
+                  "config/monitor-testnet.toml", "config/monitor-mainnet.toml",
                   "deploy/csr-network-monitor@.service", "deploy/Dockerfile",
                   "deploy/Caddyfile.example"]
 
@@ -148,8 +148,5 @@ def test_docs():
               "db-ip", "monitor-testnet.vericell.net", "config_type_args", "csr_registry_code_hash",
               "csr-dev deploy-contracts", "8131"):
         assert s in install, s
-    helper = read("docs/P2P_HELPER.md")
-    for s in ("peer_id_seen", "heights", "served", "latency_ms", "timeout_s", "address"):
-        assert s in helper, s
     readme = read("README.md").lower()
     assert "pytest" in readme and "csrmon" in readme and "reputation source" in readme

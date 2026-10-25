@@ -16,6 +16,7 @@ from .store import add_days, day_of, day_start
 
 MAX_BODY = 16384
 CACHE_TTL_S = 30
+P2P_VERIFIED_S = 48 * 3600
 _RANK_KEYS = ("runner_id", "rank", "score", "provisional", "status", "flags", "a7", "a30",
               "a365", "country", "region", "asn", "asn_peers")
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -90,7 +91,8 @@ class Api:
             hit = self._cache.get(key)
             if hit and now - hit[0] < CACHE_TTL_S:
                 return hit[1]
-        ranking = scoring.rank_runners(self.store, today, self.config.provisional_days)
+        ranking = scoring.rank_runners(self.store, today, self.config.provisional_days,
+                                       require_identity=self.config.require_identity_proof, now=now)
         summary = scoring.network_summary(self.store, today, self.config, ranking)
         with self._lock:
             self._cache[key] = (now, ranking)
@@ -115,7 +117,7 @@ class Api:
             return self._out(404, {"error": "not_found"}, {}, json_body=False)
         try:
             ip = self._client_ip(headers, client_ip)
-            if method == "GET":
+            if method == "GET" or path.rstrip("/") == "/v1/identity":
                 self._rate_check(ip)
             obj = self._route(method, path, parse_qs(parts.query), body, ip)
             return self._out(200, obj, {})
@@ -151,7 +153,7 @@ class Api:
     def _route(self, method, path, query, body, ip):
         segs = path[len("/v1/"):].strip("/").split("/") if path != "/v1/" else [""]
         today = day_of(self.clock())
-        if segs in (["checkin"], ["answer"], ["attest"]):
+        if segs in (["checkin"], ["answer"], ["attest"], ["identity"]):
             self._method(method, "POST")
             return self._post_csr(segs[0], body, ip)
         if segs == ["network"]:
@@ -212,7 +214,8 @@ class Api:
                 "stat_cell_type_hash": self.store.get_meta("stat_cell_type_hash"),
                 "csr_config_type_hash": (configcell.config_type_hash(self.config.config_type_args)
                                          if self.config.config_type_args else None),
-                "csr_registry_code_hash": self.config.csr_registry_code_hash or None}
+                "csr_registry_code_hash": self.config.csr_registry_code_hash or None,
+                "p2p_address": self.config.p2p_public_address or None}
 
     def _runners(self, query, today):
         limit = 50
@@ -269,6 +272,9 @@ class Api:
             "last_probe": None if lp is None else {
                 "ts": lp["ts"], "result": lp["result"], "failure_reason": lp["failure_reason"]},
             "last_p2p_check": None if p2p is None else {"ts": p2p["ts"], "result": p2p["result"]},
+            "check_type": self._check_type(r),
+            "identity_proven_at": r.get("identity_proven_at"),
+            "unranked_reason": item["unranked_reason"],
         }
 
     def _history(self, rid, query):
@@ -314,6 +320,18 @@ class Api:
             raise _err(404, "unknown_epoch")
         return {**e["summary"], **self._epoch_row(e)}
 
+    def _check_type(self, runner):
+        """p2p_verified: the daily check through our node passed within 48 h; peer_connected: a
+        successful probe of the last 24 h came from a peer our node is connected to."""
+        now = self.clock()
+        last = self.store.last_p2p_check(runner["runner_id"])
+        if last is not None and last["result"] == "ok" and now - last["ts"] <= P2P_VERIFIED_S:
+            return "p2p_verified"
+        probes = self.store.probes(runner["runner_id"], since=now - 86400)
+        if any(p["result"] == "ok" and p["p2p_verified"] for p in probes):
+            return "peer_connected"
+        return "challenge_only"
+
     def _post_csr(self, name, body, ip):
         if len(body) > MAX_BODY:
             raise _err(413, "too_large")
@@ -325,7 +343,7 @@ class Api:
         except (ValueError, UnicodeError):
             raise _err(400, "bad_request") from None
         fn = {"checkin": "handle_checkin", "answer": "handle_answer",
-              "attest": "handle_attest"}[name]
+              "attest": "handle_attest", "identity": "handle_identity"}[name]
         status, out = getattr(target, fn)(obj, ip, self.clock())
         return self._raise_or(status, out)
 
@@ -369,8 +387,6 @@ class Api:
         if item is None or item.get("rank") is None:
             raise _err(404, "not_ranked")
         now = self.clock()
-        probes = self.store.probes(r["runner_id"], since=now - 86400)
-        p2p = any(p["result"] == "ok" and p["p2p_verified"] for p in probes)
         lp = self.store.last_probe(r["runner_id"])
         reg = self.store.registration_for(peer_id)
         if reg is None:
@@ -386,7 +402,7 @@ class Api:
                 "of": sum(1 for i in ranking if i.get("rank") is not None),
                 "availability": {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
                                  "d365": round(item["a365"], 4)},
-                "check_type": "p2p_verified" if p2p else "challenge_only",
+                "check_type": self._check_type(r),
                 "attestation": att, "stake": stake, "last_check_at": int(lp["ts"]) if lp else 0}
 
     @staticmethod
