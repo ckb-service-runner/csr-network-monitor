@@ -169,7 +169,7 @@ def test_runner_detail(env):
     assert status == 200
     assert d["runner_id"] == rid and d["rank"] == 1 and d["provisional"] is False
     assert d["status"] == "active" and d["flags"] == []
-    assert set(d["metrics"]) == {"a7", "a30", "a365", "s30", "f30", "t", "p", "median_lag_30"}
+    assert set(d["metrics"]) == {"a7", "a30", "a365", "s30", "f30", "t", "median_lag_30"}
     assert d["score"] == scoring.runner_metrics(env["st"], rid, TODAY)["score"]
     assert d["first_seen"] == NOW - 40 * 86400 and d["first_seen_day"] == "2026-09-08"
     assert d["last_seen"] == NOW - 7200

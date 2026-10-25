@@ -26,9 +26,6 @@ class Config:
     second_tip_source: str = ""
     crosscheck_interval_s: int = 600
     aggregate_interval_s: int = 600
-    registration_code_hash: str = ""
-    registration_hash_type: str = "type"
-    registration_args: str = "0x"
     allow_insecure_endpoints: bool = False
     geo_country_csv: str = ""
     geo_asn_csv: str = ""
@@ -109,6 +106,9 @@ def _check_type(name, value, default):
         raise ConfigError(f"wrong type for {name!r}")
 
 
+_REMOVED_KEYS = ("registration_code_hash", "registration_hash_type", "registration_args")
+
+
 def load_config(path) -> Config:
     try:
         with open(path, "rb") as f:
@@ -118,6 +118,10 @@ def load_config(path) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"invalid TOML in {path}: {e}") from e
 
+    old = [k for k in _REMOVED_KEYS if k in raw]
+    if old:
+        raise ConfigError(f"config keys {', '.join(old)} are no longer supported (the old "
+                          "registration scan was removed); delete them from the config")
     known = {f.name: f for f in fields(Config)}
     for k in raw:
         if k not in known:
@@ -142,7 +146,7 @@ def load_config(path) -> Config:
     cfg = Config(**raw)
     if cfg.network not in ("testnet", "mainnet"):
         raise ConfigError("'network' must be 'testnet' or 'mainnet'")
-    for k in ("registration_hash_type", "stat_cell_acp_hash_type",
+    for k in ("stat_cell_acp_hash_type",
               "stat_cell_sighash_hash_type", "csr_registry_hash_type"):
         if getattr(cfg, k) not in _HASH_TYPES:
             raise ConfigError(f"{k!r} must be one of {_HASH_TYPES}")

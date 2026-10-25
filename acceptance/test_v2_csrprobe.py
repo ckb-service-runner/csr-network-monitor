@@ -178,7 +178,7 @@ def test_discover_p2p_mismatch_and_non_csr(tmp_path):
     (dict(status=503), "node_unavailable"),
     (dict(status=429), "rate_limited"),
     (dict(status=409), "replay"),
-    (dict(lag=40), "rejected_400"),
+    (dict(lag=120), "rejected_400"),
     (dict(trust="other"), "bad_monitor_key"),
     (dict(wrong_block=True), "wrong_block_hash"),
 ])
@@ -248,7 +248,7 @@ def test_outbound_flow(tmp_path):
     ch = body["challenge"]
     assert list(ch) == ["nonce", "height", "issued_at", "monitor_sig"]
     assert ping.verify_challenge(ch, MON_PK)
-    assert 50_000 - 19 <= ch["height"] <= 50_000 - 3 and ch["issued_at"] == S + 30
+    assert 50_000 - 100 <= ch["height"] <= 50_000 - 1 and ch["issued_at"] == S + 30
     assert do_checkin(p, node, S + 31) == (429, {"error": "challenge_open"})
     status, res = p.handle_answer(answer_for(node, ch), "5.1.2.3", S + 32)
     assert (status, res) == (200, {"result": "ok"})

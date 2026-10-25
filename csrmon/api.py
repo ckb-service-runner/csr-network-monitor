@@ -257,7 +257,7 @@ class Api:
             "runner_id": rid, "rank": item["rank"], "score": item["score"],
             "provisional": item["provisional"], "status": r["status"], "flags": item["flags"],
             "metrics": {k: item[k] for k in
-                        ("a7", "a30", "a365", "s30", "f30", "t", "p", "median_lag_30")},
+                        ("a7", "a30", "a365", "s30", "f30", "t", "median_lag_30")},
             "first_seen": int(r["first_seen"]), "first_seen_day": day_of(r["first_seen"]),
             "last_seen": r["last_seen"],
             "registration": {"service_pubkey": r["service_pubkey"], "peer_id": r["peer_id"],
@@ -369,8 +369,7 @@ class Api:
         if item is None or item.get("rank") is None:
             raise _err(404, "not_ranked")
         now = self.clock()
-        probes = self.store.probes(r["runner_id"], since=now - 86400)
-        p2p = any(p["result"] == "ok" and p["p2p_verified"] for p in probes)
+        connected = self.store.peer_connected_since(r["runner_id"], now - 86400)
         lp = self.store.last_probe(r["runner_id"])
         reg = self.store.registration_for(peer_id)
         if reg is None:
@@ -386,7 +385,7 @@ class Api:
                 "of": sum(1 for i in ranking if i.get("rank") is not None),
                 "availability": {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
                                  "d365": round(item["a365"], 4)},
-                "check_type": "p2p_verified" if p2p else "challenge_only",
+                "check_type": "peer_connected" if connected else "challenge_only",
                 "attestation": att, "stake": stake, "last_check_at": int(lp["ts"]) if lp else 0}
 
     @staticmethod
