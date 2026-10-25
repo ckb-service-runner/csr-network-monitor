@@ -91,3 +91,9 @@
 - The deposit owner proves consent by signing `CSR-STAKE-CONSENT-v1|<network>|<stake out point>|<service pubkey>|<peer id>` (Neuron "Sign message", digest `blake2b-256("Nervos Message:" ‖ text)`). The `csr-registry` contract checks it on creation and whenever stake or owner changes (errors 21-23).
 - `scan_registry` no longer passes `owner_lock_hash` to `check_stake`, so `wrong_owner` is no longer reported. The 64-byte lock args check stays. `stake.py` is unchanged (the parameter is optional and unused by the scan).
 - The monitor keeps checking "still deposited", ">= min_stake_ckb" and "one deposit, one registration" (oldest wins). Registry format, attestation and API are unchanged.
+
+## mon-docs
+- The old runner owner name was replaced everywhere by `ckb-service-runner`; the README links `https://github.com/ckb-service-runner/ckb-service-runner`.
+- No `tools/shrink_city.py`: the city CSV is snapped while loading (`csrmon/geo.py`), so `INSTALL.md` gives the measured memory (about 500 MB peak plus swap on the reference host with the raw CSV) and mentions no tool.
+- `PROTOCOL.md`: stat cell is a fixed binary layout of 159 bytes (not Molecule); the epoch list is documented as not paged (no code change); probe failure reasons copied from `csrprobe.py`; the plain binding is not claimed to be signed by the P2P key, the identity proof is `CSR-NODE-IDENTITY-v1`.
+- The first transfer to a runner wallet is not stated here; the README refers to the runner README.
