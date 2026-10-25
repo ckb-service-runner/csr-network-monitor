@@ -91,3 +91,12 @@
 - The deposit owner proves consent by signing `CSR-STAKE-CONSENT-v1|<network>|<stake out point>|<service pubkey>|<peer id>` (Neuron "Sign message", digest `blake2b-256("Nervos Message:" ‖ text)`). The `csr-registry` contract checks it on creation and whenever stake or owner changes (errors 21-23).
 - `scan_registry` no longer passes `owner_lock_hash` to `check_stake`, so `wrong_owner` is no longer reported. The 64-byte lock args check stays. `stake.py` is unchanged (the parameter is optional and unused by the scan).
 - The monitor keeps checking "still deposited", ">= min_stake_ckb" and "one deposit, one registration" (oldest wins). Registry format, attestation and API are unchanged.
+
+## ping-v1-1-monitor
+- Check-in v1.1: `ts` + `checkin_sig` verified after the binding check and before the pause/slot logic. Replay memory is a dict keyed by (service key, ts), entries expire after 120 s, capped at 10000 (oldest dropped). A pair is remembered even if the check-in is then refused for a slot reason.
+- Open challenges carry a `fresh` flag; `_expire_open` records `no_answer` only for fresh ones, unsigned ones expire with a debug log.
+- `require_checkin_sig` (bool, default false). Plan: switch it on once the runners on the network report version >= the v1.1 release.
+- Lag answer (empty hash, tip below height) is `ok`/`in_sync: false`; it is checked after the signature, binding and nonce checks.
+- `csrprobe.reject_reason` maps 400 `{"error":"clock_skew"}` to `clock_skew`.
+- `docs/PROTOCOL.md`: the `POST /v1/attest` table is replaced by a pointer to the runner repository's `spec/monitor-public-api.md`.
+- Changed `acceptance/test_v2_csrprobe.py::test_unanswered_challenge_and_known_runner`: its check-in is now signed (`ts` + `checkin_sig`), because an unsigned check-in's expiry is no longer recorded as `no_answer`.
