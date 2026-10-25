@@ -208,6 +208,11 @@ class Store:
             f"select {', '.join(self._STAKE_KEYS)} from registry_stakes where peer_id=?"
             " order by status='deposited' desc, expiry_ms desc, reg_outpoint asc limit 1", (peer_id,))
 
+    def stakes_for(self, peer_id, service_pubkey):
+        return self._all(
+            f"select {', '.join(self._STAKE_KEYS)} from registry_stakes where peer_id=?"
+            " or lower(service_pubkey)=?", (peer_id, (service_pubkey or "").lower()))
+
     def stake_user(self, stake_outpoint):
         r = self._one("select peer_id from registry_stakes where stake_outpoint=?"
                       " and status='deposited' limit 1", (stake_outpoint,))

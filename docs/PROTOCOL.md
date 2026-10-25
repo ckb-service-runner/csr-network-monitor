@@ -65,6 +65,7 @@ Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = o
 | 403 | `not_eligible` | see policy below |
 | 403 | `stake_invalid` (with `reason`) | the stake is not a deposited DAO cell (`spent`, `not_found`, `not_dao`, `not_deposit`, `too_small`) |
 | 403 | `stake_in_use` | the deposit backs a registration of another peer |
+| 403 | `stake_mismatch` | the peer or service key already has a registry cell, and the request does not name that cell's deposited stake. An operator who changes the deposit after a withdrawal removes the registry cell first (or updates it while the old attestation is still valid) |
 | 413 | `too_large` | body too large |
 | 429 | `rate_limited` | too many requests |
 | 503 | `chain_unavailable`, `unavailable` | config cell clock unreadable / attestations not configured |

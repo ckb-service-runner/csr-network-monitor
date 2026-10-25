@@ -177,6 +177,10 @@ class Attester:
         user = self.store.stake_user(stake_op)
         if user is not None and user != peer:
             return 403, {"error": "stake_in_use"}
+        rows = self.store.stakes_for(peer, svc)
+        if rows and not any(r["stake_outpoint"] == stake_op and r["status"] == "deposited"
+                            for r in rows):
+            return 403, {"error": "stake_mismatch"}
         last = self.store.last_issued(peer, svc)
         if last is not None and 0 <= now - last["issued_at"] < self.config.attest_cache_s:
             return 200, last["attestation"]

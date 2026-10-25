@@ -99,3 +99,5 @@ Phase 1 – `/v1/nodes/{peer_id}` answers 200 for every known runner or registry
 
 Phase 2 – `scoring.stake_required(config)`; `rank_runners(..., require_stake=False)` adds `stake_status` to every item (stake row status if its service key matches case-insensitively, else `none`). In registry mode only `deposited` items are ranked; `runners.status` is never changed. `Api._ranking`, `network_summary`, `epochs.build_epoch` and `daemon` pass `require_stake=stake_required(config)`; `build_epoch` also omits non-deposited items from the leaves. `stake_status` added to `_RANK_KEYS`; documented in `docs/PROTOCOL.md`.
 - Changed test: `acceptance/test_phase8.py::test_runners_paging` expects the new `stake_status` key in runner items.
+
+Phase 3 – `Store.stakes_for(peer_id, service_pubkey)` (service key compared lower case; `_all` helper). `Attester.handle_attest` answers 403 `stake_mismatch` after `stake_in_use` and before the `last_issued` cache when the peer or service key has registry rows but none is the request's stake with status `deposited`. No rows: old rules. Documented in `docs/PROTOCOL.md`.
