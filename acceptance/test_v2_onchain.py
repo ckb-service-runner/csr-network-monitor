@@ -11,6 +11,7 @@ from csrmon.hashing import blake160, from_hex, to_hex
 from fakes import cell, block_ts
 from fakes_v2 import FakeChainV2
 from fakes_stake import FakeChainStake, dao_live, dual_lock
+from fakes_v3 import CONFIG_CODE, CONFIG_DEP_TX, CONFIG_LINES, registry_v3_data
 
 MON = (0x51).to_bytes(32, "big")
 MON_PK_B = crypto.pubkey_from_secret(MON)
@@ -35,8 +36,10 @@ def monitor_lock(secret=MON):
             "args": to_hex(blake160(crypto.pubkey_from_secret(secret)))}
 
 
-CONFIG_TYPE = {"code_hash": stat_cell.TYPE_ID_CODE_HASH, "hash_type": "type", "args": CONFIG_ARGS}
+CONFIG_TYPE = {"code_hash": CONFIG_CODE, "hash_type": "data2", "args": CONFIG_ARGS}     # csr-config-type
 CONFIG_TYPE_HASH = molecule.script_hash(CONFIG_TYPE)
+REGISTRY_TYPE = {"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": CONFIG_TYPE_HASH}
+REGISTRY_TYPE_HASH = molecule.script_hash(REGISTRY_TYPE)
 
 
 @pytest.fixture
@@ -44,7 +47,8 @@ def env(tmp_path):
     lines = ['network = "testnet"', 'public_url = "https://monitor-testnet.vericell.net"',
              f'db_path = "{tmp_path}/t.db"', f'key_path = "{tmp_path}/k.key"',
              f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "{REGISTRY_CODE}"',
-             f'stat_cell_sighash_dep_tx = "0x{"5d" * 32}"', "clock_update_fee_shannons = 100000"]
+             f'stat_cell_sighash_dep_tx = "0x{"5d" * 32}"', "clock_update_fee_shannons = 100000",
+             *CONFIG_LINES]
     (tmp_path / "c.toml").write_text("\n".join(lines) + "\n")
     c = config_mod.load_config(str(tmp_path / "c.toml"))
     st = store_mod.Store(c.db_path)
@@ -64,9 +68,12 @@ def add_config_cell(fc, clock_ms, lock=None, pubkey=MON_PK_B, capacity=10_000 * 
                          "0x" + "c0" * 32, 0, capacity=capacity, lock=lock or monitor_lock()))
 
 
-def test_config_type_helpers():
-    assert configcell.config_type_script(CONFIG_ARGS) == CONFIG_TYPE
-    assert configcell.config_type_hash(CONFIG_ARGS) == CONFIG_TYPE_HASH
+def test_config_type_helpers(env):
+    assert configcell.config_type_script(CONFIG_ARGS, CONFIG_CODE) == CONFIG_TYPE
+    assert configcell.config_type_hash(CONFIG_ARGS, CONFIG_CODE) == CONFIG_TYPE_HASH
+    assert configcell.config_hash_of(env["c"]) == CONFIG_TYPE_HASH
+    assert configcell.registry_type_hash(REGISTRY_CODE, "data2", CONFIG_TYPE_HASH) == REGISTRY_TYPE_HASH
+    assert configcell.registry_hash_of(env["c"]) == REGISTRY_TYPE_HASH
 
 
 def test_read_clock_and_update(env):
@@ -82,7 +89,8 @@ def test_read_clock_and_update(env):
     assert h == molecule.tx_hash(tx)
     assert [i["previous_output"] for i in tx["inputs"]] == [{"tx_hash": "0x" + "c0" * 32, "index": "0x0"}]
     assert tx["cell_deps"] == [{"out_point": {"tx_hash": "0x" + "5d" * 32, "index": "0x0"},
-                                "dep_type": "dep_group"}]
+                                "dep_type": "dep_group"},
+                               {"out_point": {"tx_hash": CONFIG_DEP_TX, "index": "0x0"}, "dep_type": "code"}]
     [out] = tx["outputs"]
     assert out["lock"] == monitor_lock() and out["type"] == CONFIG_TYPE
     assert int(out["capacity"], 16) == 10_000 * CKB - 100000
@@ -123,18 +131,10 @@ def stake_of(tx_byte):
 
 def registry_cell(peer, svc_n, *, signer=MON, network_id=1, att_peer=None, expiry_ms=NOW * 1000 + 7 * 86400000,
                   tx_byte=1):
-    att = csrchain.sign_attestation(signer, peer_id=att_peer or peer, service_pubkey=pk(svc_n),
-                                    network={0: "mainnet", 1: "testnet", 2: "devnet"}[network_id],
-                                    expiry_ms=expiry_ms)
-    reg = {"peer_id": peer, "service_pubkey": pk(svc_n), "payout_lock_hash": "0x" + "77" * 32,
-           "network": network_id, "stake": stake_of(tx_byte),
-           "attestation": {"peer_id": att["peer_id"], "service_pubkey": att["service_pubkey"],
-                           "network_id": att["network_id"], "expiry_ms": att["expiry_ms"],
-                           "signature": att["signature"]},
-           "prekeys": "0x"}
-    t = {"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": CONFIG_TYPE_HASH}
-    return cell(t, to_hex(csrchain.encode_registry(reg)), "0x" + f"{tx_byte:02x}" * 32, 0,
-                lock=dual_lock(svc_n))
+    data = registry_v3_data(signer, peer=peer, service_pubkey=pk(svc_n), stake=stake_of(tx_byte),
+                            expiry_ms=expiry_ms, type_hash=REGISTRY_TYPE_HASH, network_id=network_id,
+                            att_peer=att_peer)
+    return cell(dict(REGISTRY_TYPE), data, "0x" + f"{tx_byte:02x}" * 32, 0, lock=dual_lock(svc_n))
 
 
 def test_scan_registry(env):
@@ -211,9 +211,10 @@ def test_attest(env):
     eligible_runner(st, 1, "QmA")
     status, body = att.handle_attest(attest_body(1, "QmA"), "1.1.1.1", NOW)
     assert status == 200
-    assert body == csrchain.sign_attestation(MON, peer_id="QmA", service_pubkey=pk(1), network="testnet",
-                                             expiry_ms=NOW * 1000 + 7 * 86400000)
-    assert csrchain.verify_attestation(body, MON_PK)
+    assert body == csrchain.sign_attestation_v2(MON, peer_id="QmA", service_pubkey=pk(1), network="testnet",
+                                                expiry_ms=NOW * 1000 + 7 * 86400000, stake=STAKE_OK,
+                                                registry_type_hash=REGISTRY_TYPE_HASH)
+    assert csrchain.verify_attestation_v2(body, MON_PK)
     # cached for attest_cache_s: same attestation even if the clock moved
     fc.cells = []
     add_config_cell(fc, clock_ms=NOW * 1000 + 5000)

@@ -76,11 +76,21 @@ def evaluate_response(challenge, response, *, service_pubkey, peer_id, chain, el
             "ckb_version": response["ckb_version"]}
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Probes never follow redirects: a 3xx answer is just a bad status."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _default_post(url, body, timeout):
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, b""

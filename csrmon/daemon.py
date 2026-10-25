@@ -46,7 +46,10 @@ class Daemon:
             self.p2p = P2PScheduler(self.store, self.chain, checker, c)
         self.discovery = Discovery(self.store, c)
         self.cell_writer = self.attester = None
-        if c.config_type_args:
+        if c.config_type_args and not c.config_type_code_hash:
+            log.warning("config_type_args is set but config_type_code_hash is not: config cell,"
+                        " registry scan and attestations are disabled")
+        if configcell.configured(c):
             self.cell_writer = configcell.ConfigCellWriter(self.store, self.chain, c, self.secret)
             self.attester = configcell.Attester(self.store, c, self.secret, self.cell_writer)
         self.monitor_pubkey = crypto.pubkey_from_secret(self.secret)
@@ -71,7 +74,8 @@ class Daemon:
             log.info("registry: %d valid, %d invalid", r["valid"], r["invalid"])
 
     def _clock(self, now):
-        if self.cell_writer is not None and self.config.stat_cell_sighash_dep_tx:
+        if (self.cell_writer is not None and self.config.stat_cell_sighash_dep_tx
+                and self.config.config_type_dep_tx):
             self.cell_writer.update_clock()
 
     def _discovery_loop(self):
@@ -83,6 +87,9 @@ class Daemon:
                 for res in self.prober.discover(self.discovery.due(peers, now), now):
                     if res.get("result") == "ok":
                         log.info("discovered CSR node %s at %s", res["node_id"], res["endpoint"])
+                for res in self.prober.discover(self.discovery.registered(now), now):
+                    if res.get("result") == "ok":
+                        log.info("registered CSR node %s answers at its endpoint", res["node_id"])
             except Exception:
                 log.exception("discovery failed")
             self._stop.wait(self.config.discovery_interval_s)

@@ -8,6 +8,7 @@ from csrmon import store as store_mod, config as config_mod
 from csrmon.hashing import blake160, to_hex
 from fakes import cell
 from fakes_stake import DEAD, FakeChainStake, dao_live, sk
+from fakes_v3 import CONFIG_LINES, config_type
 
 MON = (0x51).to_bytes(32, "big")
 MON_PK_B = crypto.pubkey_from_secret(MON)
@@ -26,12 +27,12 @@ def pk(n):
 def env(tmp_path):
     lines = ['network = "testnet"', 'public_url = "https://m.example"',
              f'db_path = "{tmp_path}/t.db"', f'key_path = "{tmp_path}/k.key"',
-             f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "0x{"47" * 32}"']
+             f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "0x{"47" * 32}"', *CONFIG_LINES]
     (tmp_path / "c.toml").write_text("\n".join(lines) + "\n")
     c = config_mod.load_config(str(tmp_path / "c.toml"))
     st = store_mod.Store(c.db_path)
     fc = FakeChainStake(tip=12_000_000)
-    ctype = {"code_hash": stat_cell.TYPE_ID_CODE_HASH, "hash_type": "type", "args": CONFIG_ARGS}
+    ctype = config_type(CONFIG_ARGS)
     fc.cells.append(cell(ctype, to_hex(csrchain.config_cell_data(MON_PK_B, NOW * 1000)), "0x" + "c0" * 32, 0,
                          lock={"code_hash": SIGHASH, "hash_type": "type", "args": to_hex(blake160(MON_PK_B))}))
     w = configcell.ConfigCellWriter(st, fc, c, MON)
@@ -59,8 +60,9 @@ def test_attest_with_live_deposit(env):
     env["fc"].live[S1] = dao_live(1, 10_000)
     status, att = env["att"].handle_attest(body(1, "QmA"), "1.1.1.1", NOW)
     assert status == 200
-    assert att == csrchain.sign_attestation(MON, peer_id="QmA", service_pubkey=pk(1), network="testnet",
-                                            expiry_ms=NOW * 1000 + 7 * 86400000)
+    assert att == csrchain.sign_attestation_v2(MON, peer_id="QmA", service_pubkey=pk(1), network="testnet",
+                                               expiry_ms=NOW * 1000 + 7 * 86400000, stake=S1,
+                                               registry_type_hash=configcell.registry_hash_of(env["c"]))
     assert env["fc"].live_calls == [S1]
     # the deposit's owner is not known yet at attestation time: any owner is accepted
     eligible(env["st"], 2, "QmB")

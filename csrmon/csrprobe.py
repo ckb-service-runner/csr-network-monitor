@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import geo as geo_mod
 from . import ping, protocol
+from .discovery import endpoint_ip
 from .hashing import from_hex
 from .prober import _default_post, _is_timeout, slot_of
 
@@ -202,17 +203,23 @@ class CsrProber:
             return []
 
         def one(c):
-            ev = self.probe_endpoint(c["endpoint"], now)
+            # a registered endpoint (F-MON-014) must answer for the registered peer and key
+            registered = c.get("service_pubkey") is not None
+            ev = self.probe_endpoint(c["endpoint"], now,
+                                     expected_peer_id=c["node_id"] if registered else None)
+            if registered and ev["result"] == "ok" and ev["service_pubkey"] != c["service_pubkey"]:
+                ev = dict(_fail("pubkey_changed"), latency_ms=ev["latency_ms"])
             res = {"node_id": c["node_id"], "endpoint": c["endpoint"], "result": ev["result"],
                    "failure_reason": ev["failure_reason"]}
             ok = ev["result"] == "ok"
             if ok:
                 rid = self._upsert_runner(ev, "inbound", c["endpoint"], now)
                 res["runner_id"] = rid
+                verified = (self.p2p_verified(c["node_id"]) if registered
+                            else ev["peer_id"] == c["node_id"])
                 self._record(rid, now, "inbound", "ok", None, ip=c.get("ip"),
-                             latency_ms=ev["latency_ms"], ev=ev,
-                             p2p_verified=ev["peer_id"] == c["node_id"])
-            self.store.discovery_mark(c["ip"], c["node_id"], ts=now, ok=ok)
+                             latency_ms=ev["latency_ms"], ev=ev, p2p_verified=verified)
+            self.store.discovery_mark(c.get("key", c["ip"]), c["node_id"], ts=now, ok=ok)
             return res
 
         with ThreadPoolExecutor(max_workers=max(1, self.config.probe_workers)) as pool:
@@ -221,7 +228,14 @@ class CsrProber:
     def probe_inbound(self, runner, now=None):
         now = self.clock() if now is None else now
         rid = runner["runner_id"]
-        ip = self._resolve_ip(runner.get("endpoint"))
+        ep = runner.get("endpoint")
+        if ep and ep == self.store.registration_endpoint(runner["peer_id"], runner["service_pubkey"]):
+            # an endpoint from a registry cell is checked again on every probe (F-MON-014)
+            ip = endpoint_ip(ep, self.config.allow_insecure_endpoints)
+            if ip is None:
+                return self._record(rid, now, "inbound", "fail", "endpoint_refused")
+        else:
+            ip = self._resolve_ip(ep)
         if self.paused:
             return self._record(rid, now, "inbound", "excluded", "monitor_paused", ip=ip)
         ev = self.probe_endpoint(runner["endpoint"], now, expected_peer_id=runner["peer_id"])

@@ -31,7 +31,7 @@ create table if not exists epochs(
   epoch integer primary key, start integer, "end" integer, merkle_root text, data_hex text,
   stat_cell_tx text, summary_json text);
 create table if not exists registrations(
-  peer_id text, service_pubkey text, expiry_ms integer, outpoint text);
+  peer_id text, service_pubkey text, expiry_ms integer, outpoint text, endpoint text);
 create index if not exists registrations_peer on registrations(peer_id);
 create table if not exists registry_stakes(
   peer_id text, service_pubkey text, reg_outpoint text, expiry_ms integer, stake_outpoint text,
@@ -87,6 +87,9 @@ class Store:
             for col in ("loc_lat", "loc_lon"):
                 if col not in rcols:
                     self._con.execute(f"ALTER TABLE runners ADD COLUMN {col} INTEGER")
+            gcols = {r[1] for r in self._con.execute("pragma table_info(registrations)")}
+            if "endpoint" not in gcols:
+                self._con.execute("ALTER TABLE registrations ADD COLUMN endpoint TEXT")
 
     def close(self):
         with self._lock:
@@ -173,10 +176,10 @@ class Store:
             try:
                 self._con.execute("delete from registrations")
                 self._con.executemany(
-                    "insert into registrations(peer_id, service_pubkey, expiry_ms, outpoint)"
-                    " values(?,?,?,?)",
-                    [(r["peer_id"], r["service_pubkey"], r["expiry_ms"], r["outpoint"])
-                     for r in rows])
+                    "insert into registrations(peer_id, service_pubkey, expiry_ms, outpoint, endpoint)"
+                    " values(?,?,?,?,?)",
+                    [(r["peer_id"], r["service_pubkey"], r["expiry_ms"], r["outpoint"],
+                      r.get("endpoint") or "") for r in rows])
                 self._con.execute("commit")
             except Exception:
                 self._con.execute("rollback")
@@ -186,6 +189,18 @@ class Store:
         return self._one(
             "select peer_id, service_pubkey, expiry_ms, outpoint from registrations"
             " where peer_id=? order by expiry_ms desc limit 1", (peer_id,))
+
+    def registered_endpoints(self):
+        """Registrations with an `endpoint` (Registry v3), newest attestation per peer first."""
+        return self._all(
+            "select peer_id, service_pubkey, endpoint from registrations where endpoint != ''"
+            " order by peer_id, expiry_ms desc, outpoint")
+
+    def registration_endpoint(self, peer_id, service_pubkey):
+        r = self._one(
+            "select endpoint from registrations where peer_id=? and service_pubkey=?"
+            " and endpoint != '' order by expiry_ms desc, outpoint limit 1", (peer_id, service_pubkey))
+        return r["endpoint"] if r else None
 
     _STAKE_KEYS = ("peer_id", "service_pubkey", "reg_outpoint", "expiry_ms", "stake_outpoint",
                    "status", "capacity_ckb", "reason")
