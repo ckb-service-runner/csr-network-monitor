@@ -67,11 +67,11 @@ Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = o
 | 403 | `stake_in_use` | the deposit backs a registration of another peer |
 | 413 | `too_large` | body too large |
 | 429 | `rate_limited` | too many requests |
-| 503 | `chain_unavailable`, `unavailable` | config cell clock unreadable / attestations not configured |
+| 503 | `chain_unavailable`, `unavailable`, `clock_stale` | config cell clock unreadable / attestations not configured / clock older than `attest_max_clock_age_s` (default 10800 s, min 600) |
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
-Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); status 404 `not_ranked` for nodes that are unknown or still provisional. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); status 404 `not_ranked` for nodes that are unknown or still provisional. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`, plus `registry_last_scan_at` (unix seconds or null), `clock_ms`, `clock_age_s`, `config_cell_spare_ckb` (or null) and `crosscheck` (`ok`, `diverged`, `unknown`, `off`). Unexpected errors answer `500 {"error":"internal"}`; `/v1/network` and `/v1/locations` are cached for 30 s.
 
 ### `GET /v1/locations`
 
@@ -118,6 +118,8 @@ slot = `int(ts // probe_interval_s)`. At most one outcome is recorded per runner
 - **Attestation policy** (`POST /v1/attest`): the binding signature must verify, the network must be the monitor's, and the node must be an active runner with that `peer_id` and at least `attest_min_ok_24h` (default 1) successful probes in the last 24 h; otherwise `403 not_eligible`. The `stake` must be a deposited DAO cell of at least `min_stake_ckb` (`403 stake_invalid` with a `reason`) not used by another peer's registration (`403 stake_in_use`); it is re-checked on every request, also when the cached attestation is returned. Validity = config cell `clock_ms` + `attest_validity_days` (default 7 days). The same attestation is returned from a cache for `attest_cache_s` (default 3600 s).
 
 ## Epoch data and leaves
+
+The epoch summary (`GET /v1/{network}/epochs/{n}`) carries `built_at` (unix seconds) and `late` (true when built more than 1 day after the epoch's end). An epoch counts as published only after its stat cell transaction is committed; the monitor publishes one epoch per pass (the newest unpublished one, older ones are skipped because each update replaces the data) and sends a dropped transaction again.
 
 Every Monday 00:00 UTC (epoch boundaries) the monitor builds a Merkle tree over all ranked runners, sorted by runner_id.
 

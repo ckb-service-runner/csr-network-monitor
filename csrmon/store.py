@@ -87,6 +87,10 @@ class Store:
             for col in ("loc_lat", "loc_lon"):
                 if col not in rcols:
                     self._con.execute(f"ALTER TABLE runners ADD COLUMN {col} INTEGER")
+            ecols = {r[1] for r in self._con.execute("pragma table_info(epochs)")}
+            for col in ("sent_block", "published", "superseded"):
+                if col not in ecols:
+                    self._con.execute(f"ALTER TABLE epochs ADD COLUMN {col} INTEGER")
 
     def close(self):
         with self._lock:
@@ -402,9 +406,30 @@ class Store:
                 (epoch, start, end, merkle_root, data_hex,
                  json.dumps(summary, sort_keys=True)))
 
-    def set_epoch_tx(self, epoch, tx_hash):
+    def set_epoch_tx(self, epoch, tx_hash, sent_block=None):
         with self._lock:
-            self._con.execute("update epochs set stat_cell_tx=? where epoch=?", (tx_hash, epoch))
+            self._con.execute("update epochs set stat_cell_tx=?, sent_block=?, published=0"
+                              " where epoch=?", (tx_hash, sent_block, epoch))
+
+    def clear_epoch_tx(self, epoch):
+        with self._lock:
+            self._con.execute("update epochs set stat_cell_tx=null, sent_block=null"
+                              " where epoch=?", (epoch,))
+
+    def set_epoch_published(self, epoch):
+        with self._lock:
+            self._con.execute("update epochs set published=1 where epoch=?", (epoch,))
+
+    def set_epoch_superseded(self, epoch):
+        with self._lock:
+            self._con.execute("update epochs set superseded=1 where epoch=?", (epoch,))
+
+    def reachable_count(self, since):
+        """Number of active runners with at least one ok probe at or after `since`."""
+        r = self._one("select count(distinct p.runner_id) n from probes p join runners r"
+                      " on r.runner_id=p.runner_id where r.status='active' and p.result='ok'"
+                      " and p.ts>=?", (since,))
+        return r["n"]
 
     @staticmethod
     def _epoch(r):
@@ -413,6 +438,14 @@ class Store:
         return {"epoch": r["epoch"], "start": r["start"], "end": r["end"],
                 "merkle_root": r["merkle_root"], "data_hex": r["data_hex"],
                 "stat_cell_tx": r["stat_cell_tx"], "summary": json.loads(r["summary_json"])}
+
+    def epoch_states(self):
+        """Publishing state per epoch, oldest first: hash sent, block it was sent at, flags."""
+        return [{"epoch": r["epoch"], "stat_cell_tx": r["stat_cell_tx"],
+                 "sent_block": r["sent_block"], "published": bool(r["published"]),
+                 "superseded": bool(r["superseded"])}
+                for r in self._all("select epoch, stat_cell_tx, sent_block, published, superseded"
+                                   " from epochs order by epoch")]
 
     def get_epoch(self, epoch):
         return self._epoch(self._one("select * from epochs where epoch=?", (epoch,)))

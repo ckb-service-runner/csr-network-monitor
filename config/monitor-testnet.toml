@@ -36,18 +36,17 @@ discovery_backoff_s = 86400    # wait before challenging a peer that did not ans
 answer_deadline_s = 60         # outbound nodes: time to answer after check-in
 reachable_window_s = 3600      # a node counts as reachable if it was probed ok within this window
 # Config cell (Type ID, owned by the monitor key). Args come from `csr-dev deploy-contracts`.
-# config_type_args = "0x..."
-# Registry type script code hash (data2) from CSR's deployments/<network>.json.
-# csr_registry_code_hash = "0x..."
+config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"
+# Registry type script code hash (data2, A8) from the runner repository's deployments/testnet.json.
+csr_registry_code_hash = "0x411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8"
 clock_update_interval_s = 3600 # config cell clock_ms update (needs stat_cell_sighash_dep_tx)
 clock_update_fee_shannons = 100000
+attest_max_clock_age_s = 10800 # no attestations when the config cell clock is older than this (min 600)
 attest_validity_days = 7       # attestation expiry = clock_ms + this
 attest_min_ok_24h = 1          # ok probes in the last 24 h required for POST /v1/attest
 min_stake_ckb = 10000          # minimum capacity (CKB) of the Nervos DAO deposit behind a registration
 attest_cache_s = 3600          # re-issue the same attestation within this time
-# Values of CSR's testnet deployment:
-# config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"
-# csr_registry_code_hash = "0x47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"
+# Further value of CSR's testnet deployment:
 # stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"
 
 # --- geolocation (DB-IP Lite CSV; GeoLite2 must be converted to the same columns) ---

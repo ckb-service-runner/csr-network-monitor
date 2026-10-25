@@ -91,3 +91,17 @@
 - The deposit owner proves consent by signing `CSR-STAKE-CONSENT-v1|<network>|<stake out point>|<service pubkey>|<peer id>` (Neuron "Sign message", digest `blake2b-256("Nervos Message:" ‖ text)`). The `csr-registry` contract checks it on creation and whenever stake or owner changes (errors 21-23).
 - `scan_registry` no longer passes `owner_lock_hash` to `check_stake`, so `wrong_owner` is no longer reported. The 64-byte lock args check stays. `stake.py` is unchanged (the parameter is optional and unused by the scan).
 - The monitor keeps checking "still deposited", ">= min_stake_ckb" and "one deposit, one registration" (oldest wins). Registry format, attestation and API are unchanged.
+
+## mon-ops-robustness
+- Unknown epoch ids that are not ASCII digits give 404 `not_found`; digit ids that do not exist stay 404 `unknown_epoch`. `/v1/.../history` with `from`/`to` outside 0..now+1 day gives 400 `bad_request` (the older `bad_range` stays for inverted or over-long ranges).
+- `/v1/network` and `/v1/locations` use a generic `_cached` helper (30 s, cleared by `invalidate()`); `nodes_reachable` comes from `Store.reachable_count`.
+- `check-config` writes warnings to stderr and still prints `ok`; with `stat_cell_enabled` and no registry keys it prints a config error and exits 2.
+- The example testnet config now sets `config_type_args` and `csr_registry_code_hash` (A8) uncommented.
+- `TipCrossCheck.status` is `ok`/`diverged`/`unknown`/`off`; `Api` gets it through the new optional `cross` argument. A failing local node still pauses probing.
+- Clock status: meta `clock_ms` is set by `read_clock` and `update_clock` (also when no update was needed); `config_cell_spare_shannons` is kept in meta and shown as `config_cell_spare_ckb`. The 30-day warning is logged whenever the config cell is read.
+- `handle_attest` checks clock freshness only when it signs a new attestation; a cached attestation is still returned.
+- Publishing state per epoch: columns `sent_block`, `published`, `superseded` (added by migration). `Store.get_epoch`/`list_epochs` keep their shape; `Store.epoch_states()` returns the new fields. `stat_cell_tx` keeps meaning "last sent hash" and is cleared when a transaction is to be sent again. If the tip cannot be read after sending, `sent_block` is null and `unknown` then counts as resend.
+- `confirm` treats an RPC error from `get_transaction` as `wait`.
+- `build_epoch` computes `late` as `now - end > 86400`. Existing stored epochs have no `built_at`/`late`.
+- Ranking with each stake status was already covered by `test_stake_scan.py`; no new test.
+- No existing repository test was changed.

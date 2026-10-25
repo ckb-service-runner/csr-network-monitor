@@ -6,7 +6,7 @@ import sys
 import time
 
 from . import crypto, keys
-from .config import ConfigError, load_config
+from .config import ConfigError, config_warnings, load_config
 from .hashing import blake160, to_hex
 
 
@@ -51,6 +51,13 @@ def main(argv=None) -> int:
     cmd = args.command
     try:
         if cmd == "check-config":
+            for w in config_warnings(config):
+                print(f"warning: {w}", file=sys.stderr)
+            if config.stat_cell_enabled and (not config.csr_registry_code_hash
+                                             or not config.config_type_args):
+                print("config error: stat_cell_enabled needs csr_registry_code_hash and"
+                      " config_type_args", file=sys.stderr)
+                return 2
             print("ok")
         elif cmd == "keygen":
             print(_key_info(keys.load_or_create_secret(config.key_path)))

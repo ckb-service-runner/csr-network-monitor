@@ -1,6 +1,9 @@
 """CKB JSON-RPC client (ChainView implementation) and tip cross-check."""
 import json
+import logging
 import urllib.request
+
+log = logging.getLogger("csrmon")
 
 
 class RpcError(Exception):
@@ -92,23 +95,52 @@ class RpcChain:
     def get_peers(self):
         return self.call("get_peers", [])
 
+    def get_transaction(self, tx_hash):
+        """`{"status": "committed"|"pending"|"proposed"|"rejected"|"unknown", "block": int|None}`."""
+        r = self.call("get_transaction", [tx_hash])
+        tx = r.get("tx_status") if isinstance(r, dict) else None
+        if not isinstance(tx, dict) or not tx.get("status"):
+            return {"status": "unknown", "block": None}
+        block = None
+        if tx.get("block_number"):
+            try:
+                block = int(tx["block_number"], 16)
+            except (TypeError, ValueError):
+                block = None
+        return {"status": tx["status"], "block": block}
+
     def send_transaction(self, tx):
         return self.call("send_transaction", [tx, "passthrough"])
 
 
 class TipCrossCheck:
+    """`check()` is False when probing must pause. A failing second source is "unknown": it does
+    not pause, is logged once per failure streak and shows in `state`."""
+
     def __init__(self, local, remote, threshold):
         self.local, self.remote, self.threshold = local, remote, threshold
+        self.state = "off" if remote is None else "unknown"
 
     def check(self) -> bool:
         try:
             local_tip = self.local.tip()[0]
         except Exception:
+            self.state = "unknown" if self.remote is not None else "off"
             return False
         if self.remote is None:
+            self.state = "off"
             return True
         try:
             remote_tip = self.remote.tip()[0]
-        except Exception:
+        except Exception as e:
+            if self.state != "unknown_logged":
+                log.warning("tip cross-check: second source unavailable (%s)", e)
+            self.state = "unknown_logged"
             return True
-        return abs(remote_tip - local_tip) <= self.threshold
+        ok = abs(remote_tip - local_tip) <= self.threshold
+        self.state = "ok" if ok else "diverged"
+        return ok
+
+    @property
+    def status(self) -> str:
+        return "unknown" if self.state == "unknown_logged" else self.state
