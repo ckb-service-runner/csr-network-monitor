@@ -91,3 +91,8 @@
 - The deposit owner proves consent by signing `CSR-STAKE-CONSENT-v1|<network>|<stake out point>|<service pubkey>|<peer id>` (Neuron "Sign message", digest `blake2b-256("Nervos Message:" ‖ text)`). The `csr-registry` contract checks it on creation and whenever stake or owner changes (errors 21-23).
 - `scan_registry` no longer passes `owner_lock_hash` to `check_stake`, so `wrong_owner` is no longer reported. The 64-byte lock args check stays. `stake.py` is unchanged (the parameter is optional and unused by the scan).
 - The monitor keeps checking "still deposited", ">= min_stake_ckb" and "one deposit, one registration" (oldest wins). Registry format, attestation and API are unchanged.
+
+## fix-monitor-stake-ranking
+
+Phase 1 – `/v1/nodes/{peer_id}` answers 200 for every known runner or registry row; 404 `unknown_node` otherwise.
+- Changed tests: `acceptance/test_v2_api.py::test_nodes_endpoint` (new `provisional` key; provisional node now 200 with `rank: null`; unknown peer is 404 `unknown_node`) and `acceptance/test_v2_daemon.py` (provisional inbound node now 200 with `rank: null`, `provisional: true`).

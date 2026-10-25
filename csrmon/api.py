@@ -363,31 +363,40 @@ class Api:
 
     def _node(self, peer_id, today):
         r = self.store.find_runner_by_peer(peer_id)
+        st = self.store.stake_for(peer_id)
+        if r is None and st is None:
+            raise _err(404, "unknown_node")
         ranking = self._ranking(today)
         item = None if r is None else next(
             (i for i in ranking if i["runner_id"] == r["runner_id"]), None)
-        if item is None or item.get("rank") is None:
-            raise _err(404, "not_ranked")
         now = self.clock()
-        probes = self.store.probes(r["runner_id"], since=now - 86400)
-        p2p = any(p["result"] == "ok" and p["p2p_verified"] for p in probes)
-        lp = self.store.last_probe(r["runner_id"])
+        if r is None:
+            check_type, last_at = "none", 0
+        else:
+            probes = self.store.probes(r["runner_id"], since=now - 86400)
+            p2p = any(p["result"] == "ok" and p["p2p_verified"] for p in probes)
+            lp = self.store.last_probe(r["runner_id"])
+            check_type = "p2p_verified" if p2p else "challenge_only"
+            last_at = int(lp["ts"]) if lp else 0
         reg = self.store.registration_for(peer_id)
         if reg is None:
             att = {"status": "none", "expiry": None}
         else:
             att = {"status": "valid" if reg["expiry_ms"] > now * 1000 else "expired",
                    "expiry": reg["expiry_ms"] // 1000}
-        st = self.store.stake_for(peer_id)
         stake = ({"status": "none", "capacity_ckb": None, "outpoint": None} if st is None else
                  {"status": st["status"], "capacity_ckb": st["capacity_ckb"],
                   "outpoint": st["stake_outpoint"]})
-        return {"peer_id": peer_id, "rank": item["rank"],
+        if item is None:
+            avail = {"d7": None, "d30": None, "d365": None}
+        else:
+            avail = {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
+                     "d365": round(item["a365"], 4)}
+        return {"peer_id": peer_id, "rank": None if item is None else item.get("rank"),
                 "of": sum(1 for i in ranking if i.get("rank") is not None),
-                "availability": {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
-                                 "d365": round(item["a365"], 4)},
-                "check_type": "p2p_verified" if p2p else "challenge_only",
-                "attestation": att, "stake": stake, "last_check_at": int(lp["ts"]) if lp else 0}
+                "provisional": bool(item and item.get("provisional")),
+                "availability": avail, "check_type": check_type,
+                "attestation": att, "stake": stake, "last_check_at": last_at}
 
     @staticmethod
     def _raise_or(status, out):

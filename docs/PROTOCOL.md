@@ -71,7 +71,7 @@ Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = o
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
-Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); status 404 `not_ranked` for nodes that are unknown or still provisional. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
 
 ### `GET /v1/locations`
 

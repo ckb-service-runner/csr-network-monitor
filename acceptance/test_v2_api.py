@@ -123,7 +123,7 @@ def test_nodes_endpoint(env):
     add_runner(env, 3, peer="QmNew", age_days=2, ok_days=2)              # provisional
     status, _, a = call(env, "GET", "/v1/nodes/QmA")
     assert status == 200
-    assert set(a) == {"peer_id", "rank", "of", "availability", "check_type", "attestation",
+    assert set(a) == {"peer_id", "rank", "of", "provisional", "availability", "check_type", "attestation",
                       "stake", "last_check_at"}
     assert a["peer_id"] == "QmA" and a["rank"] == 1 and a["of"] == 2
     assert a["availability"] == {"d7": round(139 / 144, 4), "d30": round(139 / 144, 4),
@@ -135,8 +135,10 @@ def test_nodes_endpoint(env):
     b = call(env, "GET", "/v1/nodes/QmB")[2]
     assert b["rank"] == 2 and b["check_type"] == "challenge_only"
     assert call(env, "GET", "/v1/nodes/Qm%41")[2]["peer_id"] == "QmA"     # URL-decoded
-    assert call(env, "GET", "/v1/nodes/QmNew")[:3:2] == (404, {"error": "not_ranked"})
-    assert call(env, "GET", "/v1/nodes/QmUnknown")[0] == 404
+    new = call(env, "GET", "/v1/nodes/QmNew")
+    assert new[0] == 200 and new[2]["rank"] is None and new[2]["provisional"] is True
+    assert a["provisional"] is False
+    assert call(env, "GET", "/v1/nodes/QmUnknown")[:3:2] == (404, {"error": "unknown_node"})
 
 
 def test_nodes_attestation_status(env):

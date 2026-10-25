@@ -156,7 +156,7 @@ def test_end_to_end(tmp_path):
 
         # new nodes are provisional, so not ranked yet
         status, body = http("GET", url + "/v1/nodes/QmInbound")
-        assert (status, body) == (404, {"error": "not_ranked"})
+        assert status == 200 and body["rank"] is None and body["provisional"] is True
 
         # attestation for the probed inbound node
         body = {"peer_id": "QmInbound", "service_pubkey": inbound.service_pubkey, "network": "testnet",
