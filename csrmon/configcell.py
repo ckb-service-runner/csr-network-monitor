@@ -15,16 +15,57 @@ def clock_fresh(*, clock_ms, now_s, max_age_s) -> bool:
     return now_s - clock_ms / 1000 <= max_age_s
 
 
+HOUR_MS = 3_600_000
+# csr-registry refuses an attestation expiring more than 8 days beyond the config cell clock
+# (D24 A); one hour of margin covers the clock moving between signing and the runner's tx.
+MAX_LIFETIME_MS = 8 * DAY_MS - HOUR_MS
+
+
 class ConfigCellError(Exception):
     pass
 
 
-def config_type_script(args):
-    return {"code_hash": stat_cell.TYPE_ID_CODE_HASH, "hash_type": "type", "args": args}
+def config_type_script(args, code_hash, hash_type="data2"):
+    """The `csr-config-type` script of the config cell."""
+    return {"code_hash": code_hash, "hash_type": hash_type, "args": args}
 
 
-def config_type_hash(args):
-    return molecule.script_hash(config_type_script(args))
+def config_type_hash(args, code_hash, hash_type="data2"):
+    return molecule.script_hash(config_type_script(args, code_hash, hash_type))
+
+
+def configured(config) -> bool:
+    return bool(config.config_type_args and config.config_type_code_hash)
+
+
+def config_script_of(config):
+    return config_type_script(config.config_type_args, config.config_type_code_hash,
+                              config.config_type_hash_type)
+
+
+def config_hash_of(config):
+    """Type hash of this monitor's config cell, None when not configured."""
+    return molecule.script_hash(config_script_of(config)) if configured(config) else None
+
+
+def registry_type_hash(code_hash, hash_type, config_type_args) -> str:
+    """Type hash of `{code_hash, hash_type, args}`: the `csr-registry` type script, whose args
+    is the config cell's type hash (passed here as `config_type_args`)."""
+    return molecule.script_hash({"code_hash": code_hash, "hash_type": hash_type,
+                                 "args": config_type_args})
+
+
+def registry_script_of(config):
+    return {"code_hash": config.csr_registry_code_hash, "hash_type": config.csr_registry_hash_type,
+            "args": config_hash_of(config)}
+
+
+def registry_hash_of(config):
+    """Type hash of this monitor's `csr-registry` script, None when not configured."""
+    if not configured(config) or not config.csr_registry_code_hash:
+        return None
+    return registry_type_hash(config.csr_registry_code_hash, config.csr_registry_hash_type,
+                              config_hash_of(config))
 
 
 class ConfigCellWriter:
@@ -33,9 +74,9 @@ class ConfigCellWriter:
         self.pubkey = crypto.pubkey_from_secret(secret)
 
     def find(self):
-        if not self.config.config_type_args:
+        if not configured(self.config):
             return None
-        ts = config_type_script(self.config.config_type_args)
+        ts = config_script_of(self.config)
         for c in self.chain.get_cells(ts, "type", exact=True):
             return c
         return None
@@ -81,6 +122,8 @@ class ConfigCellWriter:
         lock = {"code_hash": c.stat_cell_sighash_code_hash,
                 "hash_type": c.stat_cell_sighash_hash_type, "args": to_hex(blake160(self.pubkey))}
         out = copy.deepcopy(cell["output"])
+        if out.get("type") != config_script_of(c):
+            raise ConfigCellError("config cell has another type script")
         if out["lock"] != lock:
             raise ConfigCellError("config cell is not locked by the monitor key")
         parsed = self._parse(cell)
@@ -95,18 +138,24 @@ class ConfigCellWriter:
         if clock_ms <= parsed["clock_ms"]:
             self.store.set_meta("clock_ms", str(parsed["clock_ms"]))
             return None
-        data = bytearray(from_hex(cell["output_data"]))
-        data[33:41] = clock_ms.to_bytes(8, "little")
-        data = bytes(data)
+        # csr-config-type: the key (bytes 0..33) is copied unchanged and the clock only moves
+        # forward (checked above); the contract refuses anything else anyway.
+        old = from_hex(cell["output_data"])
+        data = old[:33] + clock_ms.to_bytes(8, "little") + old[41:]
         cap = int(out["capacity"], 16) - c.clock_update_fee_shannons
         out["capacity"] = hex(cap)
         if cap < stat_cell.occupied_capacity(out, data):
             raise ConfigCellError("config cell cannot pay the fee")
+        if not c.config_type_dep_tx:
+            raise ConfigCellError("config_type_dep_tx is not set")
         tx = {
             "version": "0x0",
             "cell_deps": [{"out_point": {"tx_hash": c.stat_cell_sighash_dep_tx,
                                          "index": hex(c.stat_cell_sighash_dep_index)},
-                           "dep_type": "dep_group"}],
+                           "dep_type": "dep_group"},
+                          {"out_point": {"tx_hash": c.config_type_dep_tx,
+                                         "index": hex(c.config_type_dep_index)},
+                           "dep_type": "code"}],
             "header_deps": [],
             "inputs": [{"since": "0x0", "previous_output": cell["out_point"]}],
             "outputs": [out],
@@ -123,36 +172,35 @@ class ConfigCellWriter:
 
 
 def scan_registry(store, chain, config, monitor_pubkey):
-    """Keep the registry cells of this network and monitor that are backed by a live DAO
+    """Keep the Registry v3 cells of this network and monitor that are backed by a live DAO
     deposit of at least `min_stake_ckb`; the deposit owner's consent is checked by the
-    `csr-registry` contract (D-A8-1), so the registry owner may differ from the deposit owner."""
-    if not config.csr_registry_code_hash or not config.config_type_args:
+    `csr-registry` contract (D-A8-1), so the registry owner may differ from the deposit owner.
+    The CSR-ATTEST-v2 signature names the stake and the registry type hash (D21 A)."""
+    if not config.csr_registry_code_hash or not configured(config):
         return None
-    script = {"code_hash": config.csr_registry_code_hash, "hash_type": config.csr_registry_hash_type,
-              "args": config_type_hash(config.config_type_args)}
+    script = registry_script_of(config)
+    type_hash = molecule.script_hash(script)
     nid = csrchain.NETWORK_IDS[config.network]
     cands, invalid = [], 0
     for c in chain.get_cells(script, "type", exact=True):
         try:
-            reg = csrchain.parse_registry(from_hex(c.get("output_data") or "0x"))
+            reg = csrchain.parse_registry_v3(from_hex(c.get("output_data") or "0x"))
             args = from_hex(c["output"]["lock"]["args"])
-            if len(args) != 64:
+            if len(args) not in (32, 64):
                 raise ValueError("bad lock args")
         except (ValueError, KeyError, TypeError):
             invalid += 1
             continue
-        att = reg["attestation"]
-        if not (reg["network"] == nid and att["network_id"] == nid
-                and att["peer_id"] == reg["peer_id"]
-                and att["service_pubkey"] == reg["service_pubkey"]
-                and csrchain.verify_attestation(att, monitor_pubkey)):
+        if not (reg["network"] == nid
+                and csrchain.verify_registry_v3(reg, monitor_pubkey, type_hash)):
             invalid += 1
             continue
         op = c["out_point"]
         res = stake.check_stake(chain, reg["stake"], min_stake_ckb=config.min_stake_ckb)
         cands.append({"peer_id": reg["peer_id"], "service_pubkey": reg["service_pubkey"],
                       "reg_outpoint": f"{op['tx_hash']}:{int(op['index'], 16)}",
-                      "expiry_ms": att["expiry_ms"], "stake_outpoint": reg["stake"],
+                      "expiry_ms": reg["expiry_ms"], "stake_outpoint": reg["stake"],
+                      "endpoint": reg["endpoint"],
                       "status": res["status"], "capacity_ckb": res["capacity_ckb"],
                       "reason": res["reason"],
                       "_order": (int(c["block_number"], 16), int(c["tx_index"], 16))})
@@ -167,11 +215,17 @@ def scan_registry(store, chain, config, monitor_pubkey):
                 used.add(r["stake_outpoint"])
     good = [r for r in cands if r["status"] == "deposited"]
     store.set_registrations([{"peer_id": r["peer_id"], "service_pubkey": r["service_pubkey"],
-                              "expiry_ms": r["expiry_ms"], "outpoint": r["reg_outpoint"]}
+                              "expiry_ms": r["expiry_ms"], "outpoint": r["reg_outpoint"],
+                              "endpoint": r["endpoint"]}
                              for r in good])
     store.set_stakes(cands)
     store.set_meta("registry_last_scan_at", str(int(time.time())))
     return {"valid": len(good), "invalid": invalid, "no_stake": len(cands) - len(good)}
+
+
+def attest_expiry_ms(clock_ms, validity_days) -> int:
+    """Never beyond the on-chain lifetime cap (D24 A)."""
+    return min(clock_ms + validity_days * DAY_MS, clock_ms + MAX_LIFETIME_MS)
 
 
 class Attester:
@@ -215,7 +269,9 @@ class Attester:
                             for r in rows):
             return 403, {"error": "stake_mismatch"}
         last = self.store.last_issued(peer, svc)
-        if last is not None and 0 <= now - last["issued_at"] < self.config.attest_cache_s:
+        if (last is not None and 0 <= now - last["issued_at"] < self.config.attest_cache_s
+                and last["attestation"].get("version") == 2
+                and last["attestation"].get("stake") == stake_op):
             return 200, last["attestation"]
         try:
             clock_ms = self.writer.read_clock()
@@ -224,8 +280,12 @@ class Attester:
         if not clock_fresh(clock_ms=clock_ms, now_s=now,
                            max_age_s=self.config.attest_max_clock_age_s):
             return 503, {"error": "clock_stale"}
-        att = csrchain.sign_attestation(
+        type_hash = registry_hash_of(self.config)
+        if type_hash is None:
+            return 503, {"error": "unavailable"}
+        att = csrchain.sign_attestation_v2(
             self.secret, peer_id=peer, service_pubkey=svc, network=network,
-            expiry_ms=clock_ms + self.config.attest_validity_days * DAY_MS)
+            expiry_ms=attest_expiry_ms(clock_ms, self.config.attest_validity_days),
+            stake=stake_op, registry_type_hash=type_hash)
         self.store.save_issued(peer, svc, issued_at=now, attestation=att)
         return 200, att

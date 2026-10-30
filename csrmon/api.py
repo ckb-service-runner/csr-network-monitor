@@ -243,8 +243,8 @@ class Api:
                 "public_url": self.config.public_url, "tip": tip,
                 "paused": bool(getattr(self.prober, "paused", False)),
                 "stat_cell_type_hash": self.store.get_meta("stat_cell_type_hash"),
-                "csr_config_type_hash": (configcell.config_type_hash(self.config.config_type_args)
-                                         if self.config.config_type_args else None),
+                "csr_config_type_hash": configcell.config_hash_of(self.config),
+                "csr_registry_type_hash": configcell.registry_hash_of(self.config),
                 "csr_registry_code_hash": self.config.csr_registry_code_hash or None,
                 "p2p_address": self.config.p2p_public_address or None}
 

@@ -16,6 +16,7 @@ from csrmon.hashing import blake160, from_hex, to_hex
 from fakes import FakeRpcServer, cell
 from fakes_v2 import FakeChainV2, FakeCSR, peer_entry
 from fakes_stake import FakeChainStake, dao_live, dual_lock
+from fakes_v3 import CONFIG_CODE, CONFIG_DEP_TX, config_type, registry_type, registry_v3_data
 
 STAKE = "0x" + "5e" * 32 + ":0"
 
@@ -93,7 +94,7 @@ def test_end_to_end(tmp_path):
 
     fc = FakeChainStake(tip=12_000_000)
     lock = {"code_hash": SIGHASH, "hash_type": "type", "args": to_hex(blake160(from_hex(mon_pk)))}
-    ctype = configcell.config_type_script(CONFIG_ARGS)
+    ctype = config_type(CONFIG_ARGS)
     fc.cells.append(cell(ctype, to_hex(csrchain.config_cell_data(from_hex(mon_pk), 1_000)),
                          "0x" + "c0" * 32, 0, capacity=10_000 * CKB, lock=lock))
     clock_txs = []
@@ -115,16 +116,11 @@ def test_end_to_end(tmp_path):
     fc.peers = [peer_entry("QmInbound", ["/ip4/127.0.0.1/tcp/8115/p2p/QmInbound"]),
                 peer_entry("QmOutbound", ["/ip4/127.0.0.2/tcp/8115"])]
     # a registry cell for the inbound node, attested by this monitor
-    att = csrchain.sign_attestation(mon_secret, peer_id="QmInbound", service_pubkey=inbound.service_pubkey,
-                                    network="testnet", expiry_ms=1_900_000_000_000)
-    reg = {"peer_id": "QmInbound", "service_pubkey": inbound.service_pubkey,
-           "payout_lock_hash": "0x" + "77" * 32, "network": 1, "stake": STAKE,
-           "attestation": {k: att[k] for k in ("peer_id", "service_pubkey", "network_id", "expiry_ms",
-                                                "signature")},
-           "prekeys": "0x"}
-    fc.cells.append(cell({"code_hash": REGISTRY_CODE, "hash_type": "data2",
-                          "args": configcell.config_type_hash(CONFIG_ARGS)},
-                         to_hex(csrchain.encode_registry(reg)), "0x" + "e1" * 32, 0, lock=dual_lock(1)))
+    rtype = registry_type(REGISTRY_CODE, CONFIG_ARGS)
+    fc.cells.append(cell(rtype, registry_v3_data(mon_secret, peer="QmInbound", service_pubkey=inbound.service_pubkey,
+                                                 stake=STAKE, expiry_ms=1_900_000_000_000,
+                                                 type_hash=molecule.script_hash(rtype)),
+                         "0x" + "e1" * 32, 0, lock=dual_lock(1)))
     fc.live[STAKE] = dao_live(1, 10_000)
     rpc = Rpc(fc)
     rpc.__enter__()
@@ -132,6 +128,7 @@ def test_end_to_end(tmp_path):
     write_cfg(**base, allow_insecure_endpoints="true", node_rpc=f'"{rpc.url}"', listen_port=port, probe_interval_s=3, probe_jitter_s=0,
               probe_timeout_s=3, aggregate_interval_s=1, discovery_interval_s=1, ping_port=inbound.port,
               config_type_args=f'"{CONFIG_ARGS}"', csr_registry_code_hash=f'"{REGISTRY_CODE}"',
+              config_type_code_hash=f'"{CONFIG_CODE}"', config_type_dep_tx=f'"{CONFIG_DEP_TX}"',
               stat_cell_sighash_dep_tx=f'"0x{"5d" * 32}"', clock_update_interval_s=2)
     proc = subprocess.Popen([sys.executable, "-m", "csrmon", "run", "--config", str(cfg_path)], cwd=ROOT,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -139,7 +136,8 @@ def test_end_to_end(tmp_path):
     try:
         mon = wait_for(lambda: http("GET", url + "/v1/monitor")[1], 30)
         assert mon["pubkey"] == mon_pk and mon["network"] == "testnet"
-        assert mon["csr_config_type_hash"] == configcell.config_type_hash(CONFIG_ARGS)
+        assert mon["csr_config_type_hash"] == configcell.config_type_hash(CONFIG_ARGS, CONFIG_CODE)
+        assert mon["csr_registry_type_hash"] == molecule.script_hash(rtype)
         assert mon["csr_registry_code_hash"] == REGISTRY_CODE
 
         # the inbound node is discovered through get_peers and probed on /v1/challenge
@@ -164,7 +162,8 @@ def test_end_to_end(tmp_path):
                 "binding_sig": ping.sign(sk(1), ping.binding_message("QmInbound", inbound.service_pubkey,
                                                                      "testnet"))}
         status, att2 = http("POST", url + "/v1/attest", body)
-        assert status == 200 and csrchain.verify_attestation(att2, mon_pk)
+        assert status == 200 and csrchain.verify_attestation_v2(att2, mon_pk)
+        assert att2["version"] == 2 and att2["stake"] == STAKE
         assert att2["monitor_pubkey"] == mon_pk and att2["network_id"] == 1
 
         # the clock of the config cell is kept current

@@ -12,6 +12,10 @@ v2 follows the CKB Service Runner (`psawyerberlin/ckb-service-runner`) as source
 
 The public page shows a world map of runner locations (dots for 2° × 2° areas, region level only; unknown locations appear only in the ranking table).
 
+## What changed in v3 (contracts-v3)
+
+The monitor reads **Registry v3** cells (one node ID, optional `endpoint`, 32- or 64-byte dual-lock args), signs **`CSR-ATTEST-v2`** attestations that name the stake and the registry type hash (reply gains `version`, `stake`, `registry_type_hash`), never issues attestations living longer than 8 days beyond the clock, keeps the clock of its **`csr-config-type`** config cell (new keys `config_type_code_hash`, `config_type_hash_type`, `config_type_dep_tx`, `config_type_dep_index`) and challenges registered runners at their `endpoint`. v2 registry cells are no longer accepted. See [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
 ## Quick start
 
 ```sh

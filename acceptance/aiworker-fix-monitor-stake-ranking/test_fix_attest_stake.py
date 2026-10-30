@@ -29,12 +29,15 @@ def pk(n):
 def env(tmp_path):
     lines = ['network = "testnet"', 'public_url = "https://m.example"',
              f'db_path = "{tmp_path}/t.db"', f'key_path = "{tmp_path}/k.key"',
-             f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "0x{"47" * 32}"']
+             f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "0x{"47" * 32}"',
+             # Integration (Oct 2026): monitor-v3 needs the csr-config-type code hash for the config cell.
+             f'config_type_code_hash = "0x{"c0" * 32}"']
     (tmp_path / "c.toml").write_text("\n".join(lines) + "\n")
     c = config_mod.load_config(str(tmp_path / "c.toml"))
     st = store_mod.Store(c.db_path)
     fc = FakeChainStake(tip=12_000_000)
-    ctype = {"code_hash": stat_cell.TYPE_ID_CODE_HASH, "hash_type": "type", "args": CONFIG_ARGS}
+    # Integration (Oct 2026): the config cell is under csr-config-type since monitor-v3.
+    ctype = configcell.config_script_of(c)
     fc.cells.append(cell(ctype, to_hex(csrchain.config_cell_data(MON_PK_B, NOW * 1000)), "0x" + "c0" * 32, 0,
                          lock={"code_hash": SIGHASH, "hash_type": "type", "args": to_hex(blake160(MON_PK_B))}))
     w = configcell.ConfigCellWriter(st, fc, c, MON)
@@ -72,8 +75,10 @@ def test_registered_peer_must_name_its_registry_stake(env):
     assert a.handle_attest(body(1, "QmA", S2), "ip", NOW) == MISMATCH
     status, att = a.handle_attest(body(1, "QmA", S1), "ip", NOW)
     assert status == 200
-    assert att == csrchain.sign_attestation(MON, peer_id="QmA", service_pubkey=pk(1), network="testnet",
-                                            expiry_ms=NOW * 1000 + 7 * 86400000)
+    # Integration (Oct 2026): CSR-ATTEST-v2 since monitor-v3 (names the stake and the registry type hash).
+    assert att == csrchain.sign_attestation_v2(MON, peer_id="QmA", service_pubkey=pk(1), network="testnet",
+                                               expiry_ms=NOW * 1000 + 7 * 86400000, stake=S1,
+                                               registry_type_hash=configcell.registry_hash_of(env["c"]))
     up = S1.upper().replace("0X", "0x")               # same out point, other spelling
     assert a.handle_attest(body(1, "QmA", up), "ip", NOW + 5)[0] == 200
 

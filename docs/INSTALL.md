@@ -66,11 +66,28 @@ csr-dev deploy-contracts   # run with the monitor key (see CSR's documentation)
 
 Take the values from CSR's `deployments/testnet.json` and set them in the monitor config:
 
-- `config_type_args` – Type ID args of the config cell
-- `csr_registry_code_hash` – data2 hash of the `csr-registry` contract
+- `config_type_args` – args of the config cell's `csr-config-type` type script
+- `config_type_code_hash` – code hash of the `csr-config-type` contract (contracts-v3)
+- `config_type_hash_type` – hash type of that script (default `data2`)
+- `config_type_dep_tx`, `config_type_dep_index` – out point of the `csr-config-type` code cell, a cell dep of every clock update (the clock is not updated without it)
+- `csr_registry_code_hash` – code hash of the `csr-registry` contract (`csr_registry_hash_type`, default `data2`)
 - `stat_cell_sighash_dep_tx` – dep group tx of the secp256k1 sighash lock (needed to sign the clock updates)
 
-Testnet values: `config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"`, `csr_registry_code_hash = "0x411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8"`, `stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"`.
+The config cell, the registry, attestations and the clock update are enabled only when both `config_type_args` and `config_type_code_hash` are set; `csr_registry_code_hash` is needed for the registry scan and for attestations (they name the registry type hash, shown as `csr_registry_type_hash` in `GET /v1/monitor`). `attest_validity_days` must be at most 7: the contract refuses attestations that live longer than 8 days beyond the config cell clock, and the monitor caps the expiry at clock + 8 days − 1 hour.
+
+Testnet values after the `contracts-v3` redeploy (to be filled in from CSR's `deployments/testnet.json`; the values of the earlier deployment – Type ID config cell, Registry v2 – no longer work):
+
+```toml
+config_type_args = "0x<TESTNET_CONFIG_TYPE_ARGS>"
+config_type_code_hash = "0x<TESTNET_CSR_CONFIG_TYPE_CODE_HASH>"
+config_type_hash_type = "data2"
+config_type_dep_tx = "0x<TESTNET_CSR_CONFIG_TYPE_DEP_TX>"
+config_type_dep_index = 0
+csr_registry_code_hash = "0x<TESTNET_CSR_REGISTRY_CODE_HASH>"
+stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"
+```
+
+Runners may publish an `endpoint` in their Registry v3 cell; the monitor then challenges them there (it must be a public address unless `allow_insecure_endpoints = true`, which is meant for test networks only; redirects are not followed).
 
 **Fund the config cell** (see "Refilling the config cell" below): it must hold enough capacity for the cell itself plus the fee of every clock update (`clock_update_fee_shannons`, taken from its capacity, every `clock_update_interval_s`). Also fund the monitor address (`keygen` prints the `blake160`) if you use the stat cell. The monitor then keeps `clock_ms` current, scans registry cells and issues attestations.
 

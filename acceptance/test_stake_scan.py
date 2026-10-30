@@ -9,6 +9,7 @@ from csrmon import store as store_mod, config as config_mod
 from csrmon.hashing import to_hex
 from fakes import cell
 from fakes_stake import DEAD, FakeChainStake, dao_live, dual_lock, secp_lock, sk
+from fakes_v3 import CONFIG_LINES, registry_type, registry_v3_data
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MON = (0x51).to_bytes(32, "big")
@@ -31,19 +32,17 @@ def stake_op(b, i=0):
 def env(tmp_path):
     lines = ['network = "testnet"', 'public_url = "https://m.example"',
              f'db_path = "{tmp_path}/t.db"', f'key_path = "{tmp_path}/k.key"',
-             f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "{REGISTRY_CODE}"']
+             f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "{REGISTRY_CODE}"', *CONFIG_LINES]
     (tmp_path / "c.toml").write_text("\n".join(lines) + "\n")
     c = config_mod.load_config(str(tmp_path / "c.toml"))
     return {"c": c, "st": store_mod.Store(c.db_path), "fc": FakeChainStake(tip=12_000_000)}
 
 
 def reg_cell(peer, n, stake, *, owner=None, tx_byte=1, block=10, tx_index=0, expiry_ms=EXP, lock=None):
-    att = csrchain.sign_attestation(MON, peer_id=peer, service_pubkey=pk(n), network="testnet", expiry_ms=expiry_ms)
-    reg = {"peer_id": peer, "service_pubkey": pk(n), "payout_lock_hash": "0x" + "77" * 32, "network": 1,
-           "attestation": {k: att[k] for k in ("peer_id", "service_pubkey", "network_id", "expiry_ms", "signature")},
-           "prekeys": "0x", "stake": stake}
-    t = {"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": configcell.config_type_hash(CONFIG_ARGS)}
-    c = cell(t, to_hex(csrchain.encode_registry(reg)), "0x" + f"{tx_byte:02x}" * 32, 0,
+    t = registry_type(REGISTRY_CODE, CONFIG_ARGS)
+    data = registry_v3_data(MON, peer=peer, service_pubkey=pk(n), stake=stake, expiry_ms=expiry_ms,
+                            type_hash=molecule.script_hash(t))
+    c = cell(t, data, "0x" + f"{tx_byte:02x}" * 32, 0,
              lock=lock or dual_lock(owner if owner is not None else n), block=block)
     c["tx_index"] = hex(tx_index)
     return c
@@ -122,17 +121,21 @@ def test_duplicate_does_not_block_a_valid_later_registration_of_another_deposit(
 
 def test_invalid_cells(env):
     fc = env["fc"]
-    bad_lock = {"code_hash": "0x" + "e8" * 32, "hash_type": "data2", "args": "0x" + "11" * 32}
+    bad_lock = {"code_hash": "0x" + "e8" * 32, "hash_type": "data2", "args": "0x" + "11" * 20}
+    lock32 = {"code_hash": "0x" + "e8" * 32, "hash_type": "data2", "args": "0x" + "11" * 32}
     fc.cells = [reg_cell("QmShortLock", 1, stake_op(0xd1), tx_byte=1, lock=bad_lock),
-                reg_cell("QmOk", 2, stake_op(0xd2), tx_byte=2)]
-    # a v1 (6-field) registry cell is invalid
-    v1 = dict(reg_cell("QmV1", 3, stake_op(0xd3), tx_byte=3))
+                reg_cell("QmOk", 2, stake_op(0xd2), tx_byte=2),
+                reg_cell("QmLock32", 6, stake_op(0xd6), tx_byte=6, lock=lock32)]     # v3: 32-byte args are fine
+    # v1 (6-field) and v2 (7-field) registry cells are invalid
     import csr_vectors as V
-    v1["output_data"] = V.REGISTRY_DATA
-    fc.cells.append(v1)
+    for i, data in enumerate((V.REGISTRY_DATA, V.REGISTRY_V2_DATA)):
+        old = dict(reg_cell(f"QmOld{i}", 3, stake_op(0xd3), tx_byte=3 + i))
+        old["output_data"] = data
+        fc.cells.append(old)
     fc.live[stake_op(0xd1)] = dao_live(1, 10_000)
     fc.live[stake_op(0xd2)] = dao_live(2, 10_000)
-    assert scan(env) == {"valid": 1, "invalid": 2, "no_stake": 0}
+    fc.live[stake_op(0xd6)] = dao_live(6, 10_000)
+    assert scan(env) == {"valid": 2, "invalid": 3, "no_stake": 0}
     assert env["st"].stake_for("QmShortLock") is None
 
 
@@ -140,7 +143,7 @@ def test_min_stake_from_config(env, tmp_path):
     lines = ['network = "testnet"', 'public_url = "https://m.example"',
              f'db_path = "{tmp_path}/u.db"', f'key_path = "{tmp_path}/k.key"',
              f'config_type_args = "{CONFIG_ARGS}"', f'csr_registry_code_hash = "{REGISTRY_CODE}"',
-             "min_stake_ckb = 500"]
+             "min_stake_ckb = 500", *CONFIG_LINES]
     (tmp_path / "u.toml").write_text("\n".join(lines) + "\n")
     c = config_mod.load_config(str(tmp_path / "u.toml"))
     fc = FakeChainStake()
