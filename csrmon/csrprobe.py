@@ -1,5 +1,6 @@
 """CSR node probing: ping protocol v1 challenges, outbound check-ins and slot bookkeeping."""
 import ipaddress
+import logging
 import json
 import math
 import random
@@ -10,22 +11,46 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from . import geo as geo_mod
-from . import ping, protocol
-from .hashing import from_hex
+from . import netutil, p2p, ping, protocol
+from .schedule import planned_time, schedule_secret
+from .hashing import from_hex, to_hex
 from .prober import _default_post, _is_timeout, slot_of
 
 _EVAL_KEYS = ("peer_id", "service_pubkey", "tip_number", "lag", "in_sync", "csr_version",
               "node_version", "r2_state", "ping_mode")
+IDENTITY_FIELDS = ("peer_id", "service_pubkey", "network", "ts", "p2p_pubkey", "p2p_sig",
+                   "service_sig")
+IDENTITY_MAX_SKEW_S = 300
 _STATUS_REASONS = {400: "rejected_400", 403: "bad_monitor_key", 409: "replay",
                    429: "rate_limited", 503: "node_unavailable"}
 
-__all__ = ["slot_of", "evaluate_answer", "CsrProber"]
+MAX_OPEN_CHALLENGES = 10000
+# A tip hash that differs from the monitor's within this many blocks of the monitor's tip is a
+# recent fork (the two nodes briefly follow different tips), not a miss.
+FORK_TOLERANCE_BLOCKS = 3
+
+_REPLAY_TTL_S = 120
+_REPLAY_MAX = 10000
+log = logging.getLogger(__name__)
+
+__all__ = ["slot_of", "evaluate_answer", "CsrProber", "FORK_TOLERANCE_BLOCKS"]
 
 
 def _fail(reason) -> dict:
     out = {"result": "fail", "failure_reason": reason}
     out.update({k: None for k in _EVAL_KEYS})
     return out
+
+
+def reject_reason(status, raw) -> str:
+    if status == 400:
+        try:
+            body = json.loads(raw)
+        except (ValueError, TypeError):
+            body = None
+        if isinstance(body, dict) and body.get("error") == "clock_skew":
+            return "clock_skew"
+    return _STATUS_REASONS.get(status, "bad_status")
 
 
 def evaluate_answer(challenge, body, *, chain, network, elapsed_s, deadline_s, sync_threshold,
@@ -46,12 +71,28 @@ def evaluate_answer(challenge, body, *, chain, network, elapsed_s, deadline_s, s
         return _fail("bad_binding")
     if expected_peer_id is not None and a["peer_id"] != expected_peer_id:
         return _fail("peer_id_mismatch")
+    if a["block_hash_at_height"] == "" and a["tip_number"] < challenge["height"]:
+        lag = max(0, chain.tip()[0] - a["tip_number"])
+        return {"result": "ok", "failure_reason": None, "peer_id": a["peer_id"],
+                "service_pubkey": a["service_pubkey"], "tip_number": a["tip_number"],
+                "lag": lag, "in_sync": False, "csr_version": a["csr_version"],
+                "node_version": a["node_version"], "r2_state": a["r2_state"],
+                "ping_mode": a["ping_mode"]}
     expected = chain.block_hash(challenge["height"])
     if expected is None or a["block_hash_at_height"].lower() != str(expected).lower():
         return _fail("wrong_block_hash")
     if a["tip_number"] < challenge["height"]:
         return _fail("tip_below_height")
-    lag = max(0, chain.tip()[0] - a["tip_number"])
+    mtip = chain.tip()[0]
+    tip = a["tip_number"]
+    if tip > mtip + sync_threshold:
+        return _fail("unknown_tip")
+    if tip <= mtip:
+        h = chain.block_hash(tip)
+        if (h is None or a["tip_hash"].lower() != str(h).lower()) \
+                and tip < mtip - FORK_TOLERANCE_BLOCKS:
+            return _fail("unknown_tip")
+    lag = max(0, mtip - tip)   # a tip above the monitor's tip is ahead of us: lag 0, hash unchecked
     return {"result": "ok", "failure_reason": None, "peer_id": a["peer_id"],
             "service_pubkey": a["service_pubkey"], "tip_number": a["tip_number"], "lag": lag,
             "in_sync": lag <= sync_threshold and a["r2_state"] == "Synced",
@@ -74,7 +115,8 @@ class CsrProber:
         self.started_at = clock()
         self.paused = False
         self._lock = threading.RLock()
-        self._planned = {}
+        self._schedule_key = schedule_secret(monitor_secret)
+        self._seen_checkins = {}  # (service_pubkey, ts) -> time seen
         self._open = {}          # nonce -> entry dict of an outbound challenge
         self._next_slot = {}     # runner_id -> first outbound slot not yet closed
         self._paused_slots = set()
@@ -85,23 +127,18 @@ class CsrProber:
         with self._lock:
             self._peers = list(peers)
 
-    def p2p_verified(self, peer_id) -> bool:
+    def peer_connected(self, peer_id) -> bool:
         with self._lock:
             return any(p["node_id"] == peer_id for p in self._peers)
 
     def planned_time(self, runner_id, slot) -> float:
-        with self._lock:
-            key = (runner_id, slot)
-            if key not in self._planned:
-                i, j = self.config.probe_interval_s, self.config.probe_jitter_s
-                t = slot * i + i / 2 + self.rng.uniform(-j, j)
-                self._planned[key] = min(max(t, slot * i), (slot + 1) * i - 1e-3)
-            return self._planned[key]
+        return planned_time(self._schedule_key, runner_id, slot, self.config.probe_interval_s,
+                            self.config.probe_jitter_s)
 
     def _new_challenge(self, now):
         tip = self.chain.tip()[0]
         with self._lock:
-            back = self.rng.randrange(3, 20)
+            back = self.rng.randrange(1, 101)
             nonce = bytes(self.rng.getrandbits(8) for _ in range(32))
         return ping.make_challenge(self.secret, height=max(0, tip - back),
                                    issued_at=int(now), nonce=nonce)
@@ -125,7 +162,7 @@ class CsrProber:
             return None
 
     def _record(self, runner_id, now, mode, result, reason, *, slot=None, ip=None,
-                latency_ms=None, ev=None, p2p_verified=None):
+                latency_ms=None, ev=None, peer_connected=None):
         ev = ev or {}
         rec = {"runner_id": runner_id, "ts": int(now),
                "slot": slot_of(now, self.config.probe_interval_s) if slot is None else slot,
@@ -134,7 +171,7 @@ class CsrProber:
                "lag": ev.get("lag"), "in_sync": ev.get("in_sync"),
                "csr_version": ev.get("csr_version"), "ckb_version": ev.get("node_version"),
                "ip_hash": None, "country": None, "asn": None,
-               "p2p_verified": p2p_verified if result == "ok" else None}
+               "p2p_verified": peer_connected if result == "ok" else None}   # column name kept
         loc = None
         if ip:
             rec["ip_hash"] = geo_mod.ip_hash(ip, self.salt)
@@ -146,6 +183,13 @@ class CsrProber:
                     loc = locate(ip)
         lat, lon = loc if loc else (None, None)
         self.store.record_probe(**rec, loc_lat=lat, loc_lon=lon)
+        # bad_binding is set by a probe that fails with it and cleared by the next good probe
+        if result == "fail" and reason == "bad_binding":
+            self.store.set_flag(runner_id, "bad_binding", True)
+        elif result == "ok":
+            r = self.store.get_runner(runner_id)
+            if r is not None and "bad_binding" in r["flags"]:
+                self.store.set_flag(runner_id, "bad_binding", False)
         return rec
 
     def _upsert_runner(self, ev, mode, endpoint, now, keep_mode=False):
@@ -167,6 +211,12 @@ class CsrProber:
 
     # ---- inbound ----
     def probe_endpoint(self, endpoint, now, expected_peer_id=None) -> dict:
+        if not self.config.allow_insecure_endpoints:
+            ip = self._resolve_ip(endpoint)
+            if ip is not None and not netutil.public_ip(ip):
+                out = _fail("unreachable")
+                out["latency_ms"] = None
+                return out
         challenge = self._new_challenge(now)
         url = endpoint.rstrip("/") + "/v1/challenge"
         body = json.dumps(challenge, separators=(",", ":")).encode()
@@ -181,7 +231,7 @@ class CsrProber:
         elapsed = time.monotonic() - t0
         latency = int(elapsed * 1000)
         if status != 200:
-            out = _fail(_STATUS_REASONS.get(status, "bad_status"))
+            out = _fail(reject_reason(status, raw))
         else:
             try:
                 answer = json.loads(raw)
@@ -211,7 +261,7 @@ class CsrProber:
                 res["runner_id"] = rid
                 self._record(rid, now, "inbound", "ok", None, ip=c.get("ip"),
                              latency_ms=ev["latency_ms"], ev=ev,
-                             p2p_verified=ev["peer_id"] == c["node_id"])
+                             peer_connected=ev["peer_id"] == c["node_id"])
             self.store.discovery_mark(c["ip"], c["node_id"], ts=now, ok=ok)
             return res
 
@@ -231,7 +281,7 @@ class CsrProber:
             self._upsert_runner(ev, "inbound", runner["endpoint"], now, keep_mode=True)
         return self._record(rid, now, "inbound", ev["result"], ev["failure_reason"], ip=ip,
                             latency_ms=ev["latency_ms"], ev=ev,
-                            p2p_verified=self.p2p_verified(runner["peer_id"]))
+                            peer_connected=self.peer_connected(runner["peer_id"]))
 
     # ---- scheduling ----
     def _expire_open(self, now):
@@ -242,6 +292,9 @@ class CsrProber:
                 del self._open[n]
         out = []
         for _, e in old:
+            if not e.get("fresh"):
+                log.debug("unsigned check-in of %s expired silently", e["runner_id"])
+                continue
             if self.store.get_runner(e["runner_id"]) is not None:
                 out.append(self._record(e["runner_id"], e["opened_at"], "outbound", "fail",
                                         "no_answer", slot=e["slot"], ip=e["ip"]))
@@ -305,6 +358,27 @@ class CsrProber:
         if not ping.verify_binding(c["peer_id"], c["service_pubkey"], c["network"],
                                    c["binding_sig"]):
             return 401, {"error": "bad_signature"}
+        fresh = False
+        if "ts" in c:
+            if abs(now - c["ts"]) > 60:
+                return 400, {"error": "stale_checkin"}
+            if not ping.verify(c["service_pubkey"], ping.checkin_message(
+                    c["peer_id"], c["service_pubkey"], c["network"], c["ts"]), c["checkin_sig"]):
+                return 401, {"error": "bad_signature"}
+            key = (c["service_pubkey"], c["ts"])
+            with self._lock:
+                seen = self._seen_checkins
+                if len(seen) >= _REPLAY_MAX or any(now - t > _REPLAY_TTL_S for t in seen.values()):
+                    for k in [k for k, t in seen.items() if now - t > _REPLAY_TTL_S]:
+                        del seen[k]
+                    while len(seen) >= _REPLAY_MAX:
+                        del seen[next(iter(seen))]
+                if key in seen:
+                    return 400, {"error": "replay"}
+                seen[key] = now
+            fresh = True
+        elif self.config.require_checkin_sig:
+            return 400, {"error": "checkin_sig_required"}
         if self.paused:
             return 503, {"error": "monitor_paused"}
         interval = self.config.probe_interval_s
@@ -323,14 +397,28 @@ class CsrProber:
         if slot is None:
             return 429, {"error": "slot_done"}
         deadline = self.config.answer_deadline_s
-        challenge = self._new_challenge(now)
-        with self._lock:
+
+        def open_check():
             if any(e["runner_id"] == rid and now - e["opened_at"] < deadline
                    for e in self._open.values()):
                 return 429, {"error": "challenge_open"}
+            if len(self._open) >= MAX_OPEN_CHALLENGES:
+                return 503, {"error": "too_many_open_challenges"}
+            return None
+
+        with self._lock:        # cheap checks first: no chain RPC for a refused check-in
+            refused = open_check()
+        if refused:
+            return refused
+        challenge = self._new_challenge(now)
+        with self._lock:
+            refused = open_check()
+            if refused:
+                return refused
             self._open[challenge["nonce"]] = {
                 "runner_id": rid, "peer_id": c["peer_id"], "service_pubkey": c["service_pubkey"],
-                "ip": ip, "opened_at": now, "slot": slot, "challenge": challenge}
+                "ip": ip, "opened_at": now, "slot": slot, "challenge": challenge,
+                "fresh": fresh}
         return 200, {"challenge": challenge}
 
     def handle_answer(self, body, ip, now=None):
@@ -355,9 +443,64 @@ class CsrProber:
         if ev["result"] == "ok":
             rid = self._upsert_runner(ev, "outbound", "", now, keep_mode=True)
             self._record(rid, now, "outbound", "ok", None, slot=e["slot"], ip=e["ip"],
-                         latency_ms=latency, ev=ev, p2p_verified=self.p2p_verified(ev["peer_id"]))
+                         latency_ms=latency, ev=ev, peer_connected=self.peer_connected(ev["peer_id"]))
             return 200, {"result": "ok"}
         if self.store.get_runner(rid) is not None:
             self._record(rid, now, "outbound", "fail", ev["failure_reason"], slot=e["slot"],
                          ip=e["ip"], latency_ms=latency)
         return 422, {"result": "fail", "failure_reason": ev["failure_reason"]}
+
+    # ---- node identity (D6 A) ----
+    @staticmethod
+    def _parse_identity(body):
+        if not isinstance(body, dict) or set(body) != set(IDENTITY_FIELDS):
+            raise ValueError("identity proof must have exactly the seven fields")
+        ts = body["ts"]
+        if isinstance(ts, bool) or not isinstance(ts, int):
+            raise ValueError("ts must be an integer")
+        for k in IDENTITY_FIELDS:
+            if k != "ts" and not isinstance(body[k], str):
+                raise ValueError(f"{k} must be a string")
+        for k in ("service_pubkey", "p2p_pubkey"):
+            pk = from_hex(body[k])
+            if len(pk) != 33 or pk[0] not in (2, 3):
+                raise ValueError(f"{k} must be a compressed secp256k1 key")
+        return dict(body)
+
+    def handle_identity(self, body, ip, now=None):
+        now = self.clock() if now is None else now
+        try:
+            b = self._parse_identity(body)
+        except (ValueError, TypeError):
+            return 400, {"error": "bad_request"}
+        if b["network"] != self.config.network:
+            return 400, {"error": "wrong_network"}
+        if abs(now - b["ts"]) > IDENTITY_MAX_SKEW_S:
+            return 400, {"error": "stale"}
+        msg = p2p.identity_message(b["peer_id"], b["service_pubkey"], b["network"], b["ts"])
+        if not (ping.verify(b["p2p_pubkey"], msg, b["p2p_sig"])
+                and ping.verify(b["service_pubkey"], msg, b["service_sig"])):
+            return 401, {"error": "bad_signature"}
+        p2p_pk = from_hex(b["p2p_pubkey"])
+        if p2p.peer_id_from_pubkey(p2p_pk) != b["peer_id"]:
+            return 403, {"error": "peer_mismatch"}
+        peer_id, pub = b["peer_id"], b["service_pubkey"]
+        rid = protocol.runner_id(from_hex(pub))
+        with self._lock:
+            old = self.store.get_runner(rid)
+            if old is None:
+                self.store.upsert_runner(rid, service_pubkey=pub, peer_id=peer_id, p2p_pubkey="",
+                                         reg_outpoint="", mode="outbound", endpoint="", p2p_port=0,
+                                         ranking_opt_in=True, now=now)
+            elif old["peer_id"] != peer_id:
+                self.store.upsert_runner(rid, service_pubkey=old["service_pubkey"], peer_id=peer_id,
+                                         p2p_pubkey=old["p2p_pubkey"],
+                                         reg_outpoint=old["reg_outpoint"], mode=old["mode"],
+                                         endpoint=old["endpoint"], p2p_port=old["p2p_port"],
+                                         ranking_opt_in=old["ranking_opt_in"], now=now)
+            self.store.set_identity(rid, p2p_pubkey=to_hex(p2p_pk), proven_at=int(now))
+            self.store.set_flag(rid, "identity_mismatch", False)
+            for other in self.store.runners_with_peer(peer_id):
+                if other["runner_id"] != rid:
+                    self.store.set_flag(other["runner_id"], "identity_mismatch", True)
+        return 200, {"ok": True}

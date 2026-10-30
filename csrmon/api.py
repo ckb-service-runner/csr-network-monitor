@@ -1,6 +1,7 @@
 """Public REST API and HTTP server."""
 import base64
 import json
+import logging
 import math
 import os
 import statistics
@@ -14,16 +15,22 @@ from . import configcell, geo, scoring
 from . import __version__
 from .store import add_days, day_of, day_start
 
+log = logging.getLogger("csrmon")
 MAX_BODY = 16384
 CACHE_TTL_S = 30
+P2P_VERIFIED_S = 48 * 3600
 _RANK_KEYS = ("runner_id", "rank", "score", "provisional", "status", "flags", "a7", "a30",
-              "a365", "country", "region", "asn", "asn_peers")
+              "a365", "country", "region", "asn", "asn_peers", "stake_status")
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _STATIC_TYPES = {".html": "text/html; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
                  ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".svg": "image/svg+xml"}
 _JSON_HEADERS = {"Content-Type": "application/json; charset=utf-8",
-                 "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}
+                 "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store",
+                 "X-Content-Type-Options": "nosniff"}
+_CSP = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+
+_POST_ROUTES = ("/v1/checkin", "/v1/answer", "/v1/attest")
 
 
 class _Reply(Exception):
@@ -45,15 +52,16 @@ def _median(vals):
 
 class Api:
     def __init__(self, store, config, monitor_secret, *, prober=None, chain=None, attester=None,
-                 clock=time.time, version=__version__):
+                 clock=time.time, version=__version__, cross=None):
         from .crypto import pubkey_from_secret
         self.store, self.config, self.prober, self.chain = store, config, prober, chain
-        self.attester = attester
+        self.attester, self.cross = attester, cross
         self.clock, self.version = clock, version
         self.pubkey = "0x" + pubkey_from_secret(monitor_secret).hex()
         self._lock = threading.Lock()
         self._cache = {}
         self._hits = {}
+        self._post_hits = {}
 
     def invalidate(self):
         with self._lock:
@@ -69,19 +77,21 @@ class Api:
                     return last
         return client_ip
 
-    def _rate_check(self, ip):
+    def _rate_check(self, ip, post=False):
         now = self.clock()
+        hits = self._post_hits if post else self._hits
+        limit = self.config.rate_limit_post_per_min if post else self.config.rate_limit_per_min
         with self._lock:
-            dq = self._hits.setdefault(ip, deque())
+            dq = hits.setdefault(ip, deque())
             while dq and dq[0] <= now - 60:
                 dq.popleft()
-            if len(dq) >= self.config.rate_limit_per_min:
+            if len(dq) >= limit:
                 retry = max(1, math.ceil(dq[0] + 60 - now))
                 raise _err(429, "rate_limited", {"Retry-After": str(retry)})
             dq.append(now)
-            if len(self._hits) > 10000:
-                for k in [k for k, v in self._hits.items() if not v or v[-1] <= now - 60]:
-                    del self._hits[k]
+            if len(hits) > 10000:
+                for k in [k for k, v in hits.items() if not v or v[-1] <= now - 60]:
+                    del hits[k]
 
     def _ranking(self, today):
         now = self.clock()
@@ -90,7 +100,9 @@ class Api:
             hit = self._cache.get(key)
             if hit and now - hit[0] < CACHE_TTL_S:
                 return hit[1]
-        ranking = scoring.rank_runners(self.store, today, self.config.provisional_days)
+        ranking = scoring.rank_runners(self.store, today, self.config.provisional_days,
+                                        scoring.stake_required(self.config),
+                                        require_identity=self.config.require_identity_proof, now=now)
         summary = scoring.network_summary(self.store, today, self.config, ranking)
         with self._lock:
             self._cache[key] = (now, ranking)
@@ -115,12 +127,17 @@ class Api:
             return self._out(404, {"error": "not_found"}, {}, json_body=False)
         try:
             ip = self._client_ip(headers, client_ip)
-            if method == "GET":
+            if method == "GET" or path.rstrip("/") == "/v1/identity":
                 self._rate_check(ip)
+            elif method == "POST" and path.rstrip("/") in _POST_ROUTES:
+                self._rate_check(ip, post=True)
             obj = self._route(method, path, parse_qs(parts.query), body, ip)
             return self._out(200, obj, {})
         except _Reply as r:
             return self._out(r.status, r.obj, r.headers)
+        except Exception:
+            log.exception("unhandled error for %s %s", method, path)
+            return self._out(500, {"error": "internal"}, {})
 
     @staticmethod
     def _static(path):
@@ -140,7 +157,9 @@ class Api:
         except OSError:
             return None
         ctype = _STATIC_TYPES[os.path.splitext(name)[1]]
-        return 200, {"Content-Type": ctype, "Cache-Control": "no-cache"}, data
+        return 200, {"Content-Type": ctype, "Cache-Control": "no-cache",
+                     "Content-Security-Policy": _CSP, "X-Content-Type-Options": "nosniff",
+                     "X-Frame-Options": "DENY"}, data
 
     @staticmethod
     def _out(status, obj, extra, json_body=True):
@@ -151,7 +170,7 @@ class Api:
     def _route(self, method, path, query, body, ip):
         segs = path[len("/v1/"):].strip("/").split("/") if path != "/v1/" else [""]
         today = day_of(self.clock())
-        if segs in (["checkin"], ["answer"], ["attest"]):
+        if segs in (["checkin"], ["answer"], ["attest"], ["identity"]):
             self._method(method, "POST")
             return self._post_csr(segs[0], body, ip)
         if segs == ["network"]:
@@ -205,14 +224,29 @@ class Api:
                 tip = {"number": n, "hash": h}
             except Exception:
                 tip = None
-        return {"pubkey": self.pubkey, "version": self.version,
+        now = self.clock()
+
+        def meta_int(key):
+            try:
+                return int(float(self.store.get_meta(key)))
+            except (TypeError, ValueError):
+                return None
+        clock_ms = meta_int("clock_ms")
+        spare = meta_int("config_cell_spare_shannons")
+        return {"registry_last_scan_at": meta_int("registry_last_scan_at"),
+                "clock_ms": clock_ms,
+                "clock_age_s": None if clock_ms is None else int(now - clock_ms / 1000),
+                "config_cell_spare_ckb": None if spare is None else spare // 10**8,
+                "crosscheck": self.cross.status if self.cross is not None else "off",
+                "pubkey": self.pubkey, "version": self.version,
                 "score_formula": scoring.SCORE_FORMULA, "network": self.config.network,
                 "public_url": self.config.public_url, "tip": tip,
                 "paused": bool(getattr(self.prober, "paused", False)),
                 "stat_cell_type_hash": self.store.get_meta("stat_cell_type_hash"),
                 "csr_config_type_hash": (configcell.config_type_hash(self.config.config_type_args)
                                          if self.config.config_type_args else None),
-                "csr_registry_code_hash": self.config.csr_registry_code_hash or None}
+                "csr_registry_code_hash": self.config.csr_registry_code_hash or None,
+                "p2p_address": self.config.p2p_public_address or None}
 
     def _runners(self, query, today):
         limit = 50
@@ -257,7 +291,7 @@ class Api:
             "runner_id": rid, "rank": item["rank"], "score": item["score"],
             "provisional": item["provisional"], "status": r["status"], "flags": item["flags"],
             "metrics": {k: item[k] for k in
-                        ("a7", "a30", "a365", "s30", "f30", "t", "p", "median_lag_30")},
+                        ("a7", "a30", "a365", "s30", "f30", "t", "median_lag_30")},
             "first_seen": int(r["first_seen"]), "first_seen_day": day_of(r["first_seen"]),
             "last_seen": r["last_seen"],
             "registration": {"service_pubkey": r["service_pubkey"], "peer_id": r["peer_id"],
@@ -269,6 +303,9 @@ class Api:
             "last_probe": None if lp is None else {
                 "ts": lp["ts"], "result": lp["result"], "failure_reason": lp["failure_reason"]},
             "last_p2p_check": None if p2p is None else {"ts": p2p["ts"], "result": p2p["result"]},
+            "check_type": self._check_type(r),
+            "identity_proven_at": r.get("identity_proven_at"),
+            "unranked_reason": item["unranked_reason"],
         }
 
     def _history(self, rid, query):
@@ -281,6 +318,9 @@ class Api:
             frm = int(query["from"][0]) if "from" in query else to - 7 * 86400
         except ValueError:
             raise _err(400, "bad_range") from None
+        limit = int(self.clock()) + 86400
+        if not (0 <= frm <= limit and 0 <= to <= limit):
+            raise _err(400, "bad_request")
         if to < frm or to - frm > 400 * 86400:
             raise _err(400, "bad_range")
         items = []
@@ -309,10 +349,22 @@ class Api:
         return {k: e[k] for k in ("epoch", "start", "end", "merkle_root", "stat_cell_tx")}
 
     def _epoch(self, n):
-        e = self.store.get_epoch(int(n)) if n.isdigit() else None
+        e = self.store.get_epoch(int(n)) if n.isascii() and n.isdigit() else None
         if e is None:
-            raise _err(404, "unknown_epoch")
+            raise _err(404, "not_found" if not (n.isascii() and n.isdigit()) else "unknown_epoch")
         return {**e["summary"], **self._epoch_row(e)}
+
+    def _check_type(self, runner):
+        """p2p_verified: the daily check through our node passed within 48 h; peer_connected: a
+        successful probe of the last 24 h came from a peer our node is connected to."""
+        now = self.clock()
+        last = self.store.last_p2p_check(runner["runner_id"])
+        if last is not None and last["result"] == "ok" and now - last["ts"] <= P2P_VERIFIED_S:
+            return "p2p_verified"
+        probes = self.store.probes(runner["runner_id"], since=now - 86400)
+        if any(p["result"] == "ok" and p["p2p_verified"] for p in probes):
+            return "peer_connected"
+        return "challenge_only"
 
     def _post_csr(self, name, body, ip):
         if len(body) > MAX_BODY:
@@ -325,19 +377,33 @@ class Api:
         except (ValueError, UnicodeError):
             raise _err(400, "bad_request") from None
         fn = {"checkin": "handle_checkin", "answer": "handle_answer",
-              "attest": "handle_attest"}[name]
+              "attest": "handle_attest", "identity": "handle_identity"}[name]
         status, out = getattr(target, fn)(obj, ip, self.clock())
         return self._raise_or(status, out)
 
+    def _cached(self, name, build):
+        now = self.clock()
+        with self._lock:
+            hit = self._cache.get(name)
+            if hit and 0 <= now - hit[0] < CACHE_TTL_S:
+                return hit[1]
+        value = build()
+        with self._lock:
+            self._cache[name] = (now, value)
+        return value
+
     def _network(self):
+        return self._cached("network", self._build_network)
+
+    def _locations(self):
+        return self._cached("locations", self._build_locations)
+
+    def _build_network(self):
         now = self.clock()
         runners = self.store.list_runners()
-        since = now - self.config.reachable_window_s
-        reachable = 0
+        reachable = self.store.reachable_count(now - self.config.reachable_window_s)
         counts = {}
         for r in runners:
-            if any(p["result"] == "ok" for p in self.store.probes(r["runner_id"], since=since)):
-                reachable += 1
             c = r["country"]
             if c and c != "??":
                 counts[c] = counts.get(c, 0) + 1
@@ -346,7 +412,7 @@ class Api:
         return {"nodes_total": len(runners), "nodes_reachable": reachable,
                 "countries": countries, "updated_at": int(now)}
 
-    def _locations(self):
+    def _build_locations(self):
         runners = self.store.list_runners()
         cells = {}
         located = 0
@@ -363,31 +429,38 @@ class Api:
 
     def _node(self, peer_id, today):
         r = self.store.find_runner_by_peer(peer_id)
+        st = self.store.stake_for(peer_id)
+        if r is None and st is None:
+            raise _err(404, "unknown_node")
         ranking = self._ranking(today)
         item = None if r is None else next(
             (i for i in ranking if i["runner_id"] == r["runner_id"]), None)
-        if item is None or item.get("rank") is None:
-            raise _err(404, "not_ranked")
         now = self.clock()
-        probes = self.store.probes(r["runner_id"], since=now - 86400)
-        p2p = any(p["result"] == "ok" and p["p2p_verified"] for p in probes)
-        lp = self.store.last_probe(r["runner_id"])
+        if r is None:
+            check_type, last_at = "none", 0
+        else:
+            lp = self.store.last_probe(r["runner_id"])
+            check_type = self._check_type(r)
+            last_at = int(lp["ts"]) if lp else 0
         reg = self.store.registration_for(peer_id)
         if reg is None:
             att = {"status": "none", "expiry": None}
         else:
             att = {"status": "valid" if reg["expiry_ms"] > now * 1000 else "expired",
                    "expiry": reg["expiry_ms"] // 1000}
-        st = self.store.stake_for(peer_id)
         stake = ({"status": "none", "capacity_ckb": None, "outpoint": None} if st is None else
                  {"status": st["status"], "capacity_ckb": st["capacity_ckb"],
                   "outpoint": st["stake_outpoint"]})
-        return {"peer_id": peer_id, "rank": item["rank"],
+        if item is None:
+            avail = {"d7": None, "d30": None, "d365": None}
+        else:
+            avail = {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
+                     "d365": round(item["a365"], 4)}
+        return {"peer_id": peer_id, "rank": None if item is None else item.get("rank"),
                 "of": sum(1 for i in ranking if i.get("rank") is not None),
-                "availability": {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
-                                 "d365": round(item["a365"], 4)},
-                "check_type": "p2p_verified" if p2p else "challenge_only",
-                "attestation": att, "stake": stake, "last_check_at": int(lp["ts"]) if lp else 0}
+                "provisional": bool(item and item.get("provisional")),
+                "availability": avail, "check_type": check_type,
+                "attestation": att, "stake": stake, "last_check_at": last_at}
 
     @staticmethod
     def _raise_or(status, out):
@@ -397,11 +470,15 @@ class Api:
 
 
 class ApiServer:
-    def __init__(self, api, host, port):
+    def __init__(self, api, host, port, *, timeout_s=10, max_connections=64):
         self.api = api
+        slots = threading.BoundedSemaphore(max_connections)
+        busy = (b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n"
+                b"Content-Length: 0\r\n\r\n")
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            timeout = timeout_s
 
             def _serve(self):
                 try:
@@ -427,7 +504,25 @@ class ApiServer:
             def log_message(self, *args):
                 pass
 
-        self.httpd = ThreadingHTTPServer((host, port), Handler)
+        class Server(ThreadingHTTPServer):
+            def process_request(self, request, client_address):
+                if not slots.acquire(blocking=False):
+                    try:
+                        request.settimeout(1)
+                        request.sendall(busy)
+                    except OSError:
+                        pass
+                    self.shutdown_request(request)
+                    return
+                super().process_request(request, client_address)
+
+            def process_request_thread(self, request, client_address):
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    slots.release()
+
+        self.httpd = Server((host, port), Handler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self._thread = None

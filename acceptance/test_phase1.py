@@ -195,11 +195,9 @@ def test_config_minimal_defaults(tmp_path):
     assert c.second_tip_source == ""
     assert c.crosscheck_interval_s == 600
     assert c.aggregate_interval_s == 600
-    assert c.registration_code_hash == ""
-    assert c.registration_hash_type == "type"
-    assert c.registration_args == "0x"
     assert c.allow_insecure_endpoints is False
-    assert c.p2p_check_cmd == ""
+    assert not hasattr(c, "p2p_check_cmd")
+    assert c.p2p_public_address == "" and c.require_identity_proof is False
     assert c.p2p_interval_s == 86400
     assert c.rate_limit_per_min == 60
     assert c.trusted_proxies == ["127.0.0.1", "::1"]

@@ -1,10 +1,18 @@
 """On-chain duties for CSR's registry: config cell clock, registry scan, attestations."""
 import copy
+import logging
+import time
 
 from . import crypto, csrchain, molecule, ping, protocol, stake, stat_cell
 from .hashing import blake160, from_hex, to_hex
 
 DAY_MS = 86_400_000
+log = logging.getLogger("csrmon")
+
+
+def clock_fresh(*, clock_ms, now_s, max_age_s) -> bool:
+    """True when the on-chain clock is at most `max_age_s` old."""
+    return now_s - clock_ms / 1000 <= max_age_s
 
 
 class ConfigCellError(Exception):
@@ -46,7 +54,26 @@ class ConfigCellWriter:
             raise ConfigCellError(str(e)) from e
 
     def read_clock(self) -> int:
-        return self._parse(self._cell())["clock_ms"]
+        cell = self._cell()
+        clock_ms = self._parse(cell)["clock_ms"]
+        self.store.set_meta("clock_ms", str(clock_ms))
+        self._note_spare(cell)
+        return clock_ms
+
+    def _note_spare(self, cell):
+        """Remember the capacity above the occupied capacity; warn when it runs low."""
+        try:
+            data = from_hex(cell.get("output_data") or "0x")
+            spare = int(cell["output"]["capacity"], 16) - stat_cell.occupied_capacity(
+                cell["output"], data)
+        except (KeyError, TypeError, ValueError):
+            return
+        self.store.set_meta("config_cell_spare_shannons", str(spare))
+        fee = self.config.clock_update_fee_shannons
+        per_day = fee * 86400 / self.config.clock_update_interval_s
+        if spare < 30 * per_day:
+            log.warning("config cell has %.2f CKB spare, which covers fewer than 30 days of clock"
+                        " updates; refill it", spare / stat_cell.CKB)
 
     def update_clock(self):
         c = self.config
@@ -64,7 +91,9 @@ class ConfigCellWriter:
         if header is None:
             raise ConfigCellError("tip header unavailable")
         clock_ms = header["timestamp_ms"]
+        self._note_spare(cell)
         if clock_ms <= parsed["clock_ms"]:
+            self.store.set_meta("clock_ms", str(parsed["clock_ms"]))
             return None
         data = bytearray(from_hex(cell["output_data"]))
         data[33:41] = clock_ms.to_bytes(8, "little")
@@ -87,6 +116,9 @@ class ConfigCellWriter:
         tx = stat_cell.sign_input_group(tx, self.secret, [0])
         h = self.chain.send_transaction(tx)
         self.store.set_meta("config_clock_ms", str(clock_ms))
+        self.store.set_meta("clock_ms", str(clock_ms))
+        spare = cap - stat_cell.occupied_capacity(out, data)
+        self.store.set_meta("config_cell_spare_shannons", str(spare))
         return h
 
 
@@ -138,6 +170,7 @@ def scan_registry(store, chain, config, monitor_pubkey):
                               "expiry_ms": r["expiry_ms"], "outpoint": r["reg_outpoint"]}
                              for r in good])
     store.set_stakes(cands)
+    store.set_meta("registry_last_scan_at", str(int(time.time())))
     return {"valid": len(good), "invalid": invalid, "no_stake": len(cands) - len(good)}
 
 
@@ -177,6 +210,10 @@ class Attester:
         user = self.store.stake_user(stake_op)
         if user is not None and user != peer:
             return 403, {"error": "stake_in_use"}
+        rows = self.store.stakes_for(peer, svc)
+        if rows and not any(r["stake_outpoint"] == stake_op and r["status"] == "deposited"
+                            for r in rows):
+            return 403, {"error": "stake_mismatch"}
         last = self.store.last_issued(peer, svc)
         if last is not None and 0 <= now - last["issued_at"] < self.config.attest_cache_s:
             return 200, last["attestation"]
@@ -184,6 +221,9 @@ class Attester:
             clock_ms = self.writer.read_clock()
         except Exception:
             return 503, {"error": "chain_unavailable"}
+        if not clock_fresh(clock_ms=clock_ms, now_s=now,
+                           max_age_s=self.config.attest_max_clock_age_s):
+            return 503, {"error": "clock_stale"}
         att = csrchain.sign_attestation(
             self.secret, peer_id=peer, service_pubkey=svc, network=network,
             expiry_ms=clock_ms + self.config.attest_validity_days * DAY_MS)

@@ -2,9 +2,10 @@
 
 ## Requirements
 
-- Linux or WSL2 with systemd, Python ≥ 3.11 (no pip packages needed at runtime).
+- Linux or WSL2 with systemd, Python ≥ 3.11. The only runtime dependency is `coincurve` (libsecp256k1 bindings, signing); `pip install` pulls it in. Without it the monitor refuses to start.
 - A **synced CKB full node** of the same network with JSON-RPC on localhost (`http://127.0.0.1:8114`) and the `Indexer` and `Chain` modules enabled. The monitor refuses non-loopback `node_rpc`.
-- Optional: a second node or provider for the tip cross-check, geolocation CSV files, a P2P helper.
+- Optional: a second node or provider for the tip cross-check, geolocation CSV files.
+- For the daily P2P check: the monitor's CKB node must accept inbound P2P connections from the internet (see "P2P address of the monitor node").
 
 ## Install
 
@@ -37,6 +38,22 @@ The instance name selects `/etc/csr-network-monitor/monitor-<name>.toml`. Run `@
 
 There is **one hostname per network**, because CSR's endpoints carry no network in the path. The testnet monitor is `monitor-testnet.vericell.net` (instance `@testnet`, port 8480); mainnet gets its own host (port 8481). Copy `deploy/Caddyfile.example` to `/etc/caddy/Caddyfile`, set your domain and reload: Caddy proxies the whole host (API, web page, `/v1/checkin`, `/v1/answer`, `/v1/attest`) to the instance. Caddy is a trusted proxy (`trusted_proxies`), the monitor then reads the client IP from `X-Forwarded-For`.
 
+The monitor drops clients that stall (`http_timeout_s`, default 10) and answers `503` beyond `http_max_connections` (default 64) concurrent connections. These are last-resort limits: **also set request timeouts in the reverse proxy** (in Caddy: `servers { timeouts { read_header 10s read_body 20s } }`), because a proxy that buffers requests is what the monitor then talks to.
+
+POST routes (`/v1/checkin`, `/v1/answer`, `/v1/attest`) have their own per-client limit, `rate_limit_post_per_min` (default 20), checked before any signature check or RPC call.
+
+### Docker and `trusted_proxies`
+
+Inside a container the monitor sees the proxy's address, not the client's. `trusted_proxies` (default `127.0.0.1`, `::1`) must list the proxy's address as the container sees it, otherwise `X-Forwarded-For` is ignored and every client shares one rate-limit bucket. Two safe setups: (1) publish the port on the host loopback only (`docker run -p 127.0.0.1:8480:8480 ...`), run the proxy on the host and set `trusted_proxies = ["172.17.0.1"]` (the bridge gateway, which is how the host appears in the container); (2) run the proxy as a container on the same network and list its address. Only list proxies you control, and never publish the port on all interfaces while a proxy is trusted.
+
+## Outgoing requests
+
+Probes, discovery and node RPC go through one helper (`csrmon/netutil.py`): proxy variables (`HTTP_PROXY` ...) are ignored, redirects are refused, answers are size-limited (probes 16 KiB, node RPC 4 MiB) and each request has an overall deadline. Discovery and probing skip private, loopback, link-local, shared (100.64/10), reserved and unique-local addresses unless `allow_insecure_endpoints = true` (for test networks).
+
+## Privacy
+
+The database file is created with mode 0600 (an existing file is tightened at start). The `discovery` table stores a salted hash of the peer IP, not the address. **`runners.endpoint` still holds the runners' endpoint addresses**, because the monitor needs them to probe. Keep the database (and its `-wal`/`-shm` files) private, readable by the service user only, and out of third-party or shared backups; encrypt backups.
+
 CSR nodes in inbound mode must be reachable on their **ping port 8131** (`POST /v1/challenge`); the monitor finds them through the P2P peers of its CKB node (`get_peers`). Nodes behind NAT use outbound mode and check in at the monitor's hostname.
 
 ## CSR contracts and config cell
@@ -53,9 +70,9 @@ Take the values from CSR's `deployments/testnet.json` and set them in the monito
 - `csr_registry_code_hash` – data2 hash of the `csr-registry` contract
 - `stat_cell_sighash_dep_tx` – dep group tx of the secp256k1 sighash lock (needed to sign the clock updates)
 
-Testnet values: `config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"`, `csr_registry_code_hash = "0x47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"`, `stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"`.
+Testnet values: `config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"`, `csr_registry_code_hash = "0x411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8"`, `stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"`.
 
-**Fund the config cell**: it must hold enough capacity for the cell itself plus the fee of every clock update (`clock_update_fee_shannons`, taken from its capacity, every `clock_update_interval_s`). Also fund the monitor address (`keygen` prints the `blake160`) if you use the stat cell. The monitor then keeps `clock_ms` current, scans registry cells and issues attestations.
+**Fund the config cell** (see "Refilling the config cell" below): it must hold enough capacity for the cell itself plus the fee of every clock update (`clock_update_fee_shannons`, taken from its capacity, every `clock_update_interval_s`). Also fund the monitor address (`keygen` prints the `blake160`) if you use the stat cell. The monitor then keeps `clock_ms` current, scans registry cells and issues attestations.
 
 ## Geolocation
 
@@ -73,9 +90,39 @@ Coordinates are reduced to the centre of a 2° × 2° cell while the file is loa
 
 The data is licensed **CC BY 4.0**; the public page shows the required credit to DB-IP. Refresh the file monthly (replace it and restart). Memory use: the snapped, merged ranges take roughly 50–150 MB for the full file; loading takes some seconds at start-up.
 
+## P2P address of the monitor node
+
+Runners connect their CKB node to the monitor's node; once a day the monitor reads `get_peers` of its node and checks each runner's peer (see docs/PROTOCOL.md, "Daily P2P check"). For this:
+
+1. Read the node ID and listen address of the monitor node:
+
+   ```sh
+   curl -s -H 'content-type: application/json' \
+     -d '{"id":1,"jsonrpc":"2.0","method":"local_node_info","params":[]}' http://127.0.0.1:8114 \
+     | jq '.result | {node_id, addresses}'
+   ```
+
+2. Build the public multiaddr from the **public** IP (or DNS name) and P2P port (default `8115`) and the `node_id`, e.g. `/ip4/203.0.113.10/tcp/8115/p2p/QmXyz…` (`/dns4/monitor.example.org/tcp/8115/p2p/QmXyz…` also works). Set it in the config and restart:
+
+   ```toml
+   p2p_public_address = "/ip4/203.0.113.10/tcp/8115/p2p/QmXyz..."
+   ```
+
+   It is published as `p2p_address` in `GET /v1/monitor`. The node ID changes if the node's `network/secret_key` changes; update the key then.
+3. The node's P2P port must be reachable from the internet (firewall, port forward; in the forwarded topology below the VPS forwards `8115`).
+4. Give the node enough slots for the runners: in `ckb.toml`, `[network] max_peers` and `max_outbound_peers` set the inbound capacity (`max_peers − max_outbound_peers`). Keep it comfortably above the number of runners plus normal peers, e.g. `max_peers = 250`, `max_outbound_peers = 8` for up to ~200 runners.
+
+`require_identity_proof` stays `false` during the rollout; see docs/PROTOCOL.md, "Identity requirement and rollout".
+
 ## Tip cross-check
 
 Every `crosscheck_interval_s` the monitor compares its node tip with `second_tip_source` (an independent node RPC). If the local node is unreachable or differs by more than `sync_threshold`, probing is paused; paused slots are `excluded`, never misses.
+
+The cross-check needs a second source: without `second_tip_source` there is nothing to compare with (`check-config` and the start-up log warn about it, and `GET /v1/monitor` shows `crosscheck: "off"`). Public RPC endpoints work (for example `https://testnet.ckb.dev/rpc`); the monitor identifies itself with the user agent `csr-network-monitor/<version>`, because some of them refuse Python's default one. If the second source is unreachable the result is `"unknown"`: probing continues, and the failure is logged once per streak.
+
+## Refilling the config cell
+
+Every clock update takes `clock_update_fee_shannons` from the config cell. `GET /v1/monitor` shows `config_cell_spare_ckb` (capacity above the occupied capacity), `clock_ms` and `clock_age_s`; the monitor logs a warning when the spare capacity covers fewer than 30 days of updates. When the cell cannot pay the fee any more the clock stops, and `POST /v1/attest` answers `503 clock_stale` once the clock is older than `attest_max_clock_age_s` (default 10800 s, minimum 600). To refill, send CKB to the config cell's lock with a transaction that spends the cell and returns it with a higher capacity (same lock, type and data), signed by the monitor key; the next clock update resumes the clock.
 
 ## Stat cell
 

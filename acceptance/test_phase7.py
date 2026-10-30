@@ -73,15 +73,13 @@ def expected(rows, age_days):
     s30 = share(window(30), "sync", "ok")
     f30 = share(window(30), "p2p_ok", "p2p_total")
     t = min(1.0, age_days / 365)
-    peers = [r["peers"] for r in window(30) if r["peers"] is not None]
-    p = min(1.0, statistics.median(peers) / 8) if peers else 0.0
-    score = round(100 * (0.40 * a30 + 0.15 * a365 + 0.15 * s30 + 0.15 * f30 + 0.10 * t + 0.05 * p), 2)
-    return dict(a7=a7, a30=a30, a365=a365, s30=s30, f30=f30, t=t, p=p, score=score)
+    score = round(100 * (0.45 * a30 + 0.15 * a365 + 0.15 * s30 + 0.15 * f30 + 0.10 * t), 2)
+    return dict(a7=a7, a30=a30, a365=a365, s30=s30, f30=f30, t=t, score=score)
 
 
 def test_constants():
     assert scoring.SCORE_FORMULA == "score_v1"
-    assert scoring.WEIGHTS == {"a30": 0.40, "a365": 0.15, "s30": 0.15, "f30": 0.15, "t": 0.10, "p": 0.05}
+    assert scoring.WEIGHTS == {"a30": 0.45, "a365": 0.15, "s30": 0.15, "f30": 0.15, "t": 0.10}
 
 
 def test_runner_metrics_formula(env):
@@ -99,7 +97,7 @@ def test_runner_metrics_formula(env):
     put_day(st, 1, 400, total=144, ok=0)   # outside every window
     m = scoring.runner_metrics(st, rid(1), TODAY, provisional_days=7)
     e = expected(rows, 100)
-    for k in ("a7", "a30", "a365", "s30", "f30", "t", "p"):
+    for k in ("a7", "a30", "a365", "s30", "f30", "t"):
         assert m[k] == pytest.approx(e[k], abs=1e-9), k
     assert m["score"] == e["score"]
     assert m["age_days"] == 100 and m["provisional"] is False
@@ -111,7 +109,7 @@ def test_metrics_without_data_and_provisional(env):
     cfg, st = env
     add(st, 2, age_days=3)
     m = scoring.runner_metrics(st, rid(2), TODAY, provisional_days=7)
-    assert m["a7"] == m["a30"] == m["a365"] == m["s30"] == m["f30"] == m["p"] == 0.0
+    assert m["a7"] == m["a30"] == m["a365"] == m["s30"] == m["f30"] == 0.0
     assert m["median_lag_30"] is None
     assert m["provisional"] is True and m["age_days"] == 3
     assert m["score"] == round(100 * 0.10 * 3 / 365, 2)
@@ -166,7 +164,7 @@ def test_rank_runners(env):
     assert by[rid(2)]["asn_peers"] == 0
     assert by[rid(5)]["asn_peers"] == 2         # unranked: counts ranked runners on its ASN
     for k in ("country", "region", "asn", "status", "first_seen", "a7", "a30", "a365",
-              "s30", "f30", "t", "p", "median_lag_30", "age_days"):
+              "s30", "f30", "t", "median_lag_30", "age_days"):
         assert k in by[rid(1)]
     assert by[rid(2)]["country"] == "US" and by[rid(2)]["region"] == "NA"
 

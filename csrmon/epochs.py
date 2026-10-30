@@ -167,6 +167,8 @@ def decode_epoch_data(data) -> dict:
 
 # ---- building ----
 
+LATE_AFTER_S = 86400
+
 def build_epoch(store, chain, secret, config, n, *, now):
     existing = store.get_epoch(n)
     if existing is not None:
@@ -184,8 +186,12 @@ def build_epoch(store, chain, secret, config, n, *, now):
         prev_hash = ckb_blake2b(from_hex(prev["data_hex"]))
     else:
         prev_hash = b"\x00" * 32
-    ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days)
-    items = sorted((i for i in ranking if i["first_seen"] < end),
+    ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days,
+                                    scoring.stake_required(config),
+                                    require_identity=getattr(config, "require_identity_proof", False),
+                                    now=end - 1)
+    items = sorted((i for i in ranking if i["first_seen"] < end
+                    and (not scoring.stake_required(config) or i["stake_status"] == "deposited")),
                    key=lambda i: from_hex(i["runner_id"]))
     leaves = []
     for i in items:
@@ -221,7 +227,8 @@ def build_epoch(store, chain, secret, config, n, *, now):
                "country_count": len(countries), "asn_count": len(asns),
                "score_formula": scoring.SCORE_FORMULA, "merkle_root": to_hex(root),
                "prev_epoch_hash": to_hex(prev_hash), "data_hex": to_hex(data),
-               "monitor_pubkey": to_hex(crypto.pubkey_from_secret(secret)), "leaves": entries}
+               "monitor_pubkey": to_hex(crypto.pubkey_from_secret(secret)),
+               "built_at": int(now), "late": now - end > LATE_AFTER_S, "leaves": entries}
     summary = json.loads(json.dumps(summary))
     store.save_epoch(n, start=start, end=end, merkle_root=summary["merkle_root"],
                      data_hex=summary["data_hex"], summary=summary)
@@ -234,7 +241,7 @@ def build_pending(store, chain, secret, config, *, now) -> list:
         return []
     built = [e["epoch"] for e in store.list_epochs()]
     out = []
-    for n in pending_epochs(int(float(ms)), now, built):
+    for n in sorted(pending_epochs(int(float(ms)), now, built)):
         build_epoch(store, chain, secret, config, n, now=now)
         out.append(n)
     return out

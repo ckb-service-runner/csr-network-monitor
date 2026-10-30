@@ -142,7 +142,7 @@ def test_runners_paging(env):
     assert [i["rank"] for i in full["items"]] == list(range(1, 8))
     item = full["items"][0]
     assert set(item) == {"runner_id", "rank", "score", "provisional", "status", "flags",
-                         "a7", "a30", "a365", "country", "region", "asn", "asn_peers"}
+                         "a7", "a30", "a365", "country", "region", "asn", "asn_peers", "stake_status"}
     assert item["country"] == "DE" and item["asn"] == 3320 and item["asn_peers"] == 6
     seen, cursor = [], None
     while True:
@@ -169,7 +169,7 @@ def test_runner_detail(env):
     assert status == 200
     assert d["runner_id"] == rid and d["rank"] == 1 and d["provisional"] is False
     assert d["status"] == "active" and d["flags"] == []
-    assert set(d["metrics"]) == {"a7", "a30", "a365", "s30", "f30", "t", "p", "median_lag_30"}
+    assert set(d["metrics"]) == {"a7", "a30", "a365", "s30", "f30", "t", "median_lag_30"}
     assert d["score"] == scoring.runner_metrics(env["st"], rid, TODAY)["score"]
     assert d["first_seen"] == NOW - 40 * 86400 and d["first_seen_day"] == "2026-09-08"
     assert d["last_seen"] == NOW - 7200

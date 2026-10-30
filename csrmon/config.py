@@ -8,6 +8,9 @@ class ConfigError(Exception):
     pass
 
 
+A7_REGISTRY_HASH = "0x47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"
+
+
 @dataclass
 class Config:
     network: str
@@ -26,19 +29,20 @@ class Config:
     second_tip_source: str = ""
     crosscheck_interval_s: int = 600
     aggregate_interval_s: int = 600
-    registration_code_hash: str = ""
-    registration_hash_type: str = "type"
-    registration_args: str = "0x"
     allow_insecure_endpoints: bool = False
     geo_country_csv: str = ""
     geo_asn_csv: str = ""
     geo_city_csv: str = ""
-    p2p_check_cmd: str = ""
-    p2p_check_timeout_s: int = 120
     p2p_interval_s: int = 86400
+    p2p_public_address: str = ""
+    require_identity_proof: bool = False
     rate_limit_per_min: int = 60
+    rate_limit_post_per_min: int = 20
+    http_timeout_s: int = 10
+    http_max_connections: int = 64
     trusted_proxies: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
     min_stake_ckb: int = 10000
+    require_checkin_sig: bool = False
     gate_min_days: int = 365
     gate_min_runners: int = 60
     gate_max_asn_share: float = 0.25
@@ -71,6 +75,7 @@ class Config:
     attest_validity_days: int = 7
     attest_min_ok_24h: int = 1
     attest_cache_s: int = 3600
+    attest_max_clock_age_s: int = 10800
 
 
 _REQUIRED = {"network", "public_url", "db_path", "key_path"}
@@ -79,15 +84,22 @@ _NONEMPTY = _REQUIRED
 _MIN = {
     "listen_port": 0, "probe_interval_s": 1, "probe_jitter_s": 0,
     "probe_workers": 1, "sync_threshold": 0, "crosscheck_interval_s": 1,
-    "aggregate_interval_s": 1, "p2p_check_timeout_s": 1, "p2p_interval_s": 1,
-    "rate_limit_per_min": 1, "gate_min_days": 1, "gate_min_runners": 1,
+    "aggregate_interval_s": 1, "p2p_interval_s": 1,
+    "rate_limit_per_min": 1, "rate_limit_post_per_min": 1, "http_timeout_s": 1,
+    "http_max_connections": 1, "gate_min_days": 1, "gate_min_runners": 1,
     "provisional_days": 0, "probe_retention_days": 1,
     "ping_port": 1, "discovery_interval_s": 1, "discovery_backoff_s": 1,
     "answer_deadline_s": 1, "reachable_window_s": 1, "clock_update_interval_s": 1,
     "attest_validity_days": 1, "attest_min_ok_24h": 1, "attest_cache_s": 1,
-    "min_stake_ckb": 1,
+    "min_stake_ckb": 1, "attest_max_clock_age_s": 600,
 }
 _HASH_TYPES = ("type", "data", "data1", "data2")
+# keys that existed once and were removed; a config that still has them gets a clear message
+_REMOVED = {
+    "p2p_check_cmd": "the external P2P helper was removed; the monitor now checks runners through"
+                     " its own node (set p2p_public_address, see docs/INSTALL.md)",
+    "p2p_check_timeout_s": "the external P2P helper was removed; delete this key",
+}
 
 
 def _check_type(name, value, default):
@@ -109,6 +121,9 @@ def _check_type(name, value, default):
         raise ConfigError(f"wrong type for {name!r}")
 
 
+_REMOVED_KEYS = ("registration_code_hash", "registration_hash_type", "registration_args")
+
+
 def load_config(path) -> Config:
     try:
         with open(path, "rb") as f:
@@ -118,8 +133,14 @@ def load_config(path) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"invalid TOML in {path}: {e}") from e
 
+    old = [k for k in _REMOVED_KEYS if k in raw]
+    if old:
+        raise ConfigError(f"config keys {', '.join(old)} are no longer supported (the old "
+                          "registration scan was removed); delete them from the config")
     known = {f.name: f for f in fields(Config)}
     for k in raw:
+        if k in _REMOVED:
+            raise ConfigError(f"config key {k!r} is no longer supported: {_REMOVED[k]}")
         if k not in known:
             raise ConfigError(f"unknown config key {k!r}")
     for k in _REQUIRED:
@@ -142,7 +163,7 @@ def load_config(path) -> Config:
     cfg = Config(**raw)
     if cfg.network not in ("testnet", "mainnet"):
         raise ConfigError("'network' must be 'testnet' or 'mainnet'")
-    for k in ("registration_hash_type", "stat_cell_acp_hash_type",
+    for k in ("stat_cell_acp_hash_type",
               "stat_cell_sighash_hash_type", "csr_registry_hash_type"):
         if getattr(cfg, k) not in _HASH_TYPES:
             raise ConfigError(f"{k!r} must be one of {_HASH_TYPES}")
@@ -151,6 +172,13 @@ def load_config(path) -> Config:
     for k in ("gate_max_asn_share", "gate_max_country_share"):
         if not 0 <= getattr(cfg, k) <= 1:
             raise ConfigError(f"{k!r} must be between 0 and 1")
+
+    if cfg.p2p_public_address:
+        a = cfg.p2p_public_address
+        parts = a.split("/")
+        if (not a.startswith("/") or "/p2p/" not in a or not parts[-1]
+                or parts[-2] != "p2p" or any(c.isspace() for c in a)):
+            raise ConfigError("'p2p_public_address' must be a multiaddr ending in /p2p/<node id>")
 
     if cfg.config_type_args:
         a = cfg.config_type_args
@@ -175,3 +203,18 @@ def load_config(path) -> Config:
     if not cfg.salt_path:
         cfg.salt_path = cfg.db_path + ".salt"
     return cfg
+
+
+def config_warnings(config) -> list:
+    """Sentences about settings that silently disable or weaken a duty of the monitor."""
+    out = []
+    if not config.csr_registry_code_hash or not config.config_type_args:
+        out.append("no registry scan: csr_registry_code_hash and config_type_args must both be"
+                   " set, otherwise registrations, stakes and attestations are not available.")
+    if config.csr_registry_code_hash.lower() == A7_REGISTRY_HASH:
+        out.append("csr_registry_code_hash is the old A7 registry; the current A8 registry hash"
+                   " is in the runner repository (deployments/testnet.json).")
+    if not config.second_tip_source:
+        out.append("second_tip_source is empty: the tip cross-check has no independent source"
+                   " and cannot detect a local node that is stuck on a wrong chain.")
+    return out

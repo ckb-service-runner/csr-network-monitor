@@ -1,6 +1,8 @@
 """Peer discovery: turn the CKB node's get_peers into candidate CSR endpoints."""
 import ipaddress
 
+from .netutil import public_ip
+
 
 def _addr_ip(addr):
     if not isinstance(addr, str):
@@ -53,6 +55,8 @@ class Discovery:
         endpoints = {r["endpoint"] for r in runners if r["endpoint"]}
         out = []
         for p in peers:
+            if not (self.config.allow_insecure_endpoints or public_ip(p["ip"])):
+                continue
             ep = endpoint_for(p["ip"], self.config.ping_port)
             if p["node_id"] in peer_ids or ep in endpoints:
                 continue

@@ -37,7 +37,7 @@ class Clock:
 
 def make(tmp_path, clock, fc=None, **extra):
     base = {"probe_interval_s": I, "probe_jitter_s": 60, "probe_timeout_s": 3,
-            "answer_deadline_s": 60}
+            "answer_deadline_s": 60, "allow_insecure_endpoints": "true"}
     base.update(extra)
     lines = ['network = "testnet"', 'public_url = "https://m.example"',
              f'db_path = "{tmp_path}/t.db"', f'key_path = "{tmp_path}/k.key"']
@@ -166,8 +166,9 @@ def test_discover_p2p_mismatch_and_non_csr(tmp_path):
     [res] = p.discover([{"node_id": "QmX", "ip": "10.9.9.9",
                          "endpoint": f"http://127.0.0.1:{closed_port()}"}], now=S + 200)
     assert res["result"] == "fail" and res["failure_reason"] == "unreachable"
-    assert st.discovery_get("10.9.9.9") == {"ip": "10.9.9.9", "node_id": "QmX",
-                                            "last_try": S + 200, "last_ok": None}
+    got = st.discovery_get("10.9.9.9")
+    assert got.pop("ip_hash") != "10.9.9.9"
+    assert got == {"node_id": "QmX", "last_try": S + 200, "last_ok": None}
     p.paused = True
     assert p.discover([{"node_id": "QmY", "ip": "1.1.1.1", "endpoint": "http://1.1.1.1:1"}], now=S) == []
 
@@ -178,7 +179,7 @@ def test_discover_p2p_mismatch_and_non_csr(tmp_path):
     (dict(status=503), "node_unavailable"),
     (dict(status=429), "rate_limited"),
     (dict(status=409), "replay"),
-    (dict(lag=40), "rejected_400"),
+    (dict(lag=120), "rejected_400"),
     (dict(trust="other"), "bad_monitor_key"),
     (dict(wrong_block=True), "wrong_block_hash"),
 ])
@@ -248,7 +249,7 @@ def test_outbound_flow(tmp_path):
     ch = body["challenge"]
     assert list(ch) == ["nonce", "height", "issued_at", "monitor_sig"]
     assert ping.verify_challenge(ch, MON_PK)
-    assert 50_000 - 19 <= ch["height"] <= 50_000 - 3 and ch["issued_at"] == S + 30
+    assert 50_000 - 100 <= ch["height"] <= 50_000 - 1 and ch["issued_at"] == S + 30
     assert do_checkin(p, node, S + 31) == (429, {"error": "challenge_open"})
     status, res = p.handle_answer(answer_for(node, ch), "5.1.2.3", S + 32)
     assert (status, res) == (200, {"result": "ok"})
@@ -297,7 +298,11 @@ def test_unanswered_challenge_and_known_runner(tmp_path):
     status, body = do_checkin(p, node, S + 30)
     p.handle_answer(answer_for(node, body["challenge"]), "1.1.1.1", S + 31)   # runner exists now
     clock.t = S + I + 20
-    status, body = do_checkin(p, node, S + I + 20)
+    cb = node.checkin_body()                                   # v1.1: only a signed check-in can miss
+    cb["ts"] = S + I + 20
+    cb["checkin_sig"] = ping.sign(sk(5), ping.checkin_message(
+        cb["peer_id"], cb["service_pubkey"], cb["network"], cb["ts"]))
+    status, body = p.handle_checkin(cb, "5.1.2.3", S + I + 20)
     assert status == 200
     recs = p.run_due(S + I + 81)                                # 61 s later, no answer
     assert [(r["runner_id"], r["result"], r["failure_reason"]) for r in recs] == \

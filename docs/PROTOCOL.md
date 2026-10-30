@@ -23,6 +23,7 @@ Fields are joined with `\n`, no trailing newline, numbers in decimal.
 - `CSR-PING-CHALLENGE-v1\n{nonce}\n{height}\n{issued_at}` – signed by the monitor.
 - `CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}` – signed by the P2P/node key (binding_sig); proves the service key belongs to the node id.
 - `CSR-PING-ANSWER-v1\n` + the 13 answer fields in order: `nonce, peer_id, service_pubkey, binding_sig, network, csr_version, node_version, r2_state, tip_number, tip_hash, block_hash_at_height, uptime_s, ping_mode` – signed by the service key.
+- `CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}` – signed by the node's P2P key (`p2p_sig`) **and** by the service key (`service_sig`); body of `POST /v1/identity`.
 - `CSR-ATTEST-v1`: attestation digest = `ckb_blake2b("CSR-ATTEST-v1" ‖ molecule(AttestationBody{peer_id, service_pubkey, network, expiry_ms}))`.
 
 ## Routes
@@ -31,19 +32,34 @@ Fields are joined with `\n`, no trailing newline, numbers in decimal.
 
 Inbound mode. The monitor sends `{"nonce","height","issued_at","monitor_sig"}` (exactly these fields) and receives `{"answer": {13 fields}, "sig"}` (`tip_number`, `uptime_s` are numbers, the rest strings). The node answers 400 (bad nonce / not fresh, `|now − issued_at| > 60 s` / `height` above its tip), 403 (bad monitor signature), 409 (nonce replay), 429 (rate limit 10/min/IP), 503 (node data unavailable).
 
-The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync.
+The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync. An answer with an empty `block_hash_at_height` and a `tip_number` below the challenge height is a reachable, not-in-sync probe (`ok`, `in_sync: false`, lag from the tips); an empty hash with `tip_number >= height` is `wrong_block_hash`. A runner's 400 `{"error": "clock_skew"}` is recorded with reason `clock_skew` (other 400s: `rejected_400`).
+
+**Tip challenge.** The challenge `height` is drawn from the last 100 blocks: `tip − randrange(1, 101)` (clamped at 0), `tip` being the monitor's tip. After the signature, binding, peer and `block_hash_at_height` checks, the monitor checks the answer's tip, with `mtip` the monitor's tip:
+
+1. `tip_number < height` fails with `tip_below_height`.
+2. `tip_number > mtip + sync_threshold` fails with `unknown_tip` (a tip the monitor's node does not know).
+3. `mtip < tip_number <= mtip + sync_threshold` is ok with lag 0 (the monitor cannot check the hash yet).
+4. Otherwise `tip_hash` must equal the monitor's block hash at `tip_number`. A mismatch fails with `unknown_tip`, unless `tip_number >= mtip − FORK_TOLERANCE_BLOCKS` (3): a different tip within 3 blocks of the monitor's tip is a recent fork, not a miss, and the probe is ok.
+
+`lag = max(0, mtip − tip_number)`.
+
+**Answer deadline.** Pull (inbound) probes must be answered within `probe_timeout_s` (default 5 s). Push (outbound) runners get `answer_deadline_s` (default 60 s) between the check-in reply and the answer (decision D8 B). The reason: push runners are typically behind home connections and the answer needs a full round trip (check-in, challenge, node work, answer) that a 5 s limit would often miss; a pull probe is a single request to a reachable endpoint. The deadline is not shortened: an answer after it fails with `late`, no answer at all with `no_answer`.
+
+**`bad_binding` flag.** A probe that fails with `bad_binding` sets the runner's `bad_binding` flag (score 0, excluded from the ranking, bit 4 of the epoch leaf flags). The next good probe clears it.
 
 ### `POST /v1/checkin` and `POST /v1/answer` (on the monitor, outbound mode)
 
-For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig","network","csr_version"}`.
+For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig","network","csr_version"}`, in v1.1 plus `ts` (non-negative integer, seconds) and `checkin_sig` (string). `checkin_sig` is the service key's signature of `CSR-CHECKIN-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}`. Both fields must be present or both absent (else 400 `bad_request`).
+
+A check-in with `ts` is *fresh* if `|now − ts| <= 60 s` (else 400 `stale_checkin`), the signature is valid (else 401 `bad_signature`) and the pair (service key, `ts`) was not seen in the last 2 minutes (else 400 `replay`; the memory is bounded). Only a fresh check-in whose challenge expires unanswered is recorded as `no_answer`. An unsigned (v1) check-in still gets a challenge during the transition, but its expiry is not recorded. With config `require_checkin_sig` (default false) unsigned check-ins are refused with 400 `checkin_sig_required`.
 
 | Route | Status | Body | Meaning |
 |---|---|---|---|
 | checkin | 200 | `{"challenge": {...}}` | challenge issued |
-| checkin | 400 | `bad_request`, `wrong_network` | malformed body / other network |
+| checkin | 400 | `bad_request`, `wrong_network`, `stale_checkin`, `replay`, `checkin_sig_required` | malformed body / other network / `ts` outside ±60 s / (key, `ts`) seen before / unsigned check-in refused |
 | checkin | 401 | `bad_signature` | binding signature invalid |
 | checkin | 413 | `too_large` | body too large |
-| checkin | 429 | `slot_done`, `challenge_open`, `rate_limited` | the slot already has an outcome / a challenge is open / too many requests |
+| checkin | 429 | `slot_done`, `challenge_open`, `rate_limited` | the slot already has an outcome / a challenge is open / too many requests (`rate_limit_post_per_min`, default 20 per client IP, counted separately from the GET limit `rate_limit_per_min` and checked before signatures or RPC calls; `Retry-After` is set) |
 | checkin | 503 | `monitor_paused`, `unavailable` | tip cross-check failed / not available |
 | answer | 200 | `{"result":"ok"}` | accepted (CSR treats HTTP 200 as accepted) |
 | answer | 400 | `bad_request` | malformed |
@@ -53,25 +69,45 @@ For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig",
 
 A correct answer creates the runner (mode `outbound`).
 
+### `POST /v1/identity` (on the monitor, node identity proof)
+
+Proves that the runner controls the P2P key of the CKB node behind its `peer_id` (decision D6 A). The runner signs the message
+
+```
+CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}
+```
+
+(`ts` = Unix seconds, decimal) with the node's P2P key and with its service key (ping signature: SHA-256 of the UTF-8 text, 64-byte compact ECDSA secp256k1) and posts exactly these seven keys:
+
+```json
+{"peer_id": "Qm…", "service_pubkey": "0x02…", "network": "testnet", "ts": 1792281600,
+ "p2p_pubkey": "0x03…", "p2p_sig": "0x…", "service_sig": "0x…"}
+```
+
+The monitor checks the time (`|now − ts| ≤ 300 s`), both signatures and that `peer_id = base58(0x12 ‖ 0x20 ‖ SHA-256(p2p_pubkey))` (the libp2p peer ID CKB derives from its compressed secp256k1 key).
+
+| Status | Body | Meaning |
+|---|---|---|
+| 200 | `{"ok": true}` | proof stored |
+| 400 | `bad_request` | not exactly the seven keys, wrong types or keys that are not compressed secp256k1 keys |
+| 400 | `wrong_network` | other network |
+| 400 | `stale` | `ts` more than 300 s from the monitor's clock |
+| 401 | `bad_signature` | `p2p_sig` or `service_sig` invalid |
+| 403 | `peer_mismatch` | `peer_id` is not derived from `p2p_pubkey` |
+| 413 | `too_large` | body too large |
+| 429 | `rate_limited` | too many requests (same per-IP limit `rate_limit_per_min` as the GET routes) |
+
+On success the runner of `service_pubkey` (created with mode `outbound` if unknown, its `peer_id` set to the proven one) stores `p2p_pubkey` and `identity_proven_at = now`, and its `identity_mismatch` flag is cleared. Every other active runner that claims the same `peer_id` gets the `identity_mismatch` flag (score 0, not ranked). Runners repeat the proof regularly (daily); a proof is valid for ranking for 7 days.
+
 ### `POST /v1/attest`
 
 Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = out point text `0x<64 hex>:<index>` of the Nervos DAO deposit); reply is CSR's attestation file `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature","monitor_pubkey"}` (input of `csr register prepare`).
 
-| Status | Body | Meaning |
-|---|---|---|
-| 200 | attestation | issued (or cached) |
-| 400 | `bad_request`, `wrong_network` | malformed / other network |
-| 401 | `bad_signature` | binding invalid |
-| 403 | `not_eligible` | see policy below |
-| 403 | `stake_invalid` (with `reason`) | the stake is not a deposited DAO cell (`spent`, `not_found`, `not_dao`, `not_deposit`, `too_small`) |
-| 403 | `stake_in_use` | the deposit backs a registration of another peer |
-| 413 | `too_large` | body too large |
-| 429 | `rate_limited` | too many requests |
-| 503 | `chain_unavailable`, `unavailable` | config cell clock unreadable / attestations not configured |
+Statuses and error codes are defined once, in `spec/monitor-public-api.md` of the runner repository; this document keeps no table of its own for this route. Reminder of the codes added by the 2026-10 audit fixes: 403 `stake_mismatch` (the peer or service key already has a registry cell and the request does not name that cell's deposited stake; an operator who changes the deposit after a withdrawal removes the registry cell first), 429 `rate_limited` (`rate_limit_post_per_min`) and 503 `clock_stale` (the config cell clock is older than `attest_max_clock_age_s`). The eligibility policy is described under "Registry, config cell and attestations" below.
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
-Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); status 404 `not_ranked` for nodes that are unknown or still provisional. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `peer_connected` / `challenge_only`, see below); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`, plus `registry_last_scan_at` (unix seconds or null), `clock_ms`, `clock_age_s`, `config_cell_spare_ckb` (or null) and `crosscheck` (`ok`, `diverged`, `unknown`, `off`) and `p2p_address` (the monitor node's public P2P multiaddr `/ip4/…/tcp/…/p2p/<node id>` from `p2p_public_address`, `null` when not set). Unexpected errors answer `500 {"error":"internal"}`; `/v1/network` and `/v1/locations` are cached for 30 s. The runner answer (`/v1/{network}/runners/{id}`) also carries `check_type`, `identity_proven_at` (Unix time or `null`) and `unranked_reason` (`null` when ranked, else `provisional`, `flagged`, `stake` or `identity_unproven`).
 
 ### `GET /v1/locations`
 
@@ -92,7 +128,33 @@ Only snapped 2° cells are published: no exact coordinates, cities or region nam
 
 - **Inbound nodes** publish no address on chain. Every `discovery_interval_s` the monitor reads `get_peers` of its own CKB node (`node_id` and multiaddrs) and sends `POST http://<peer ip>:8131/v1/challenge` to peers that are not yet runners, with a back-off (`discovery_backoff_s`) for peers that did not answer. A correct answer creates a runner (mode `inbound`), challenged once per slot afterwards.
 - **Outbound nodes** check in; a correct answer creates the runner (mode `outbound`).
-- **`p2p_verified` vs `challenge_only`**: a probe is `p2p_verified` when the answering `peer_id` is a node ID the monitor's CKB node is connected to (for discovery: the peer that was probed). A node is reported as `p2p_verified` if any successful probe of the last 24 h was P2P-verified, else `challenge_only`.
+- **Probe flag**: a probe is marked P2P-connected (`p2p_verified` column of the probe) when the answering `peer_id` is a node ID the monitor's CKB node is connected to (for discovery: the peer that was probed).
+- **`check_type`**: `p2p_verified` when the last daily P2P check (below) is `ok` and at most 48 h old; else `peer_connected` when a successful probe of the last 24 h came from a connected peer; else `challenge_only`.
+
+## Daily P2P check (decision D12 A)
+
+The monitor publishes its own node's P2P address as `p2p_address` in `GET /v1/monitor`; runners ask their CKB node to connect to it (e.g. `add_node`). Once per `p2p_interval_s` (default one day) per active runner, at a random time inside the period, the monitor reads `get_peers` of its own node **once per run** and judges the runner's `peer_id`:
+
+- `not_connected` – the peer is not in the list or has no usable `sync_state`;
+- `behind` – `sync_state.best_known_header_number` (hex) is more than `sync_threshold` below the monitor's tip;
+- `wrong_chain` – `best_known_header_hash` differs from the monitor's block hash at that height, or the number is more than `sync_threshold` above the tip;
+- `ok` – otherwise (a peer up to `sync_threshold` ahead of the monitor is fine; its hash cannot be compared yet).
+
+A runner whose `peer_id` is the monitor's own node (`local_node_info`) never appears in that node's `get_peers`; it is judged `ok` when it proved that node's P2P key within the proof lifetime (7 days, `POST /v1/identity`), and like any other runner otherwise.
+
+`ok` is recorded as `ok`, everything else as `fail` with the verdict as `reason`. If the node cannot be read, every due runner of that run is recorded as `error` and is not retried before the next period. Nothing runs while probing is paused (tip cross-check). The results feed F30 (`p2p_ok / p2p_total` of the last 30 days). The P2P handshake itself proves that the peer holds the private key behind its peer ID, so a connected peer with that ID is that node.
+
+**Limitation:** the check proves that the runner's node follows the chain's headers and holds the peer key. It does not download full blocks, so it does not prove that the node stores or serves block bodies.
+
+The external helper command (`p2p_check_cmd`, `p2p_check_timeout_s`) was never shipped and is removed; a config that still contains these keys is rejected with a message.
+
+## Identity requirement and rollout
+
+`require_identity_proof` (bool, default `false`): when `true`, a runner is only ranked if it has an identity proof (`POST /v1/identity`) younger than 7 days; others stay unranked with `unranked_reason = "identity_unproven"`. Rollout:
+
+1. Deploy the runner side (`node-identity-runner`): it sends identity proofs and connects its node to `p2p_address`.
+2. Deploy this monitor with `require_identity_proof = false` and set `p2p_public_address`. Proofs are stored, conflicting claims are flagged, the daily check feeds F30, nobody loses a rank for a missing proof.
+3. Watch `identity_proven_at` of the ranked runners; when (nearly) all have proofs, set `require_identity_proof = true` and restart.
 
 ## Slots and the grace rule
 
@@ -117,7 +179,17 @@ slot = `int(ts // probe_interval_s)`. At most one outcome is recorded per runner
 - **Stake** (D-A7-1): the stake is a Nervos DAO deposit in the operator's wallet (D-A8-1: the registry owner may be any lock, CSR uses the runner's own wallet; the deposit owner consents with a signed message `CSR-STAKE-CONSENT-v1|<network>|<stake out point>|<service pubkey>|<peer id>`, digest `blake2b-256("Nervos Message:" ‖ text)`, which the `csr-registry` contract checks on creation and on every change of stake or owner, errors 21–23; the monitor therefore does not compare the owners). Out points are written `0x<64 hex>:<index decimal>`. It is **deposited** when `get_live_cell` says `live` and the cell has the DAO type script `{code_hash: 0x82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e, hash_type: type, args: 0x}`, data of exactly 8 zero bytes, capacity ≥ `min_stake_ckb` (default 10 000 CKB). States: `deposited`; `withdrawn` (the cell is dead); `invalid` (anything else, with a reason: `not_found`, `not_dao`, `not_deposit`, `too_small`); `duplicate` (**one deposit, one registration**: of several registry cells naming the same deposit only the oldest – lowest block number, tx index, out point – counts). Only registrations with a deposited stake are valid.
 - **Attestation policy** (`POST /v1/attest`): the binding signature must verify, the network must be the monitor's, and the node must be an active runner with that `peer_id` and at least `attest_min_ok_24h` (default 1) successful probes in the last 24 h; otherwise `403 not_eligible`. The `stake` must be a deposited DAO cell of at least `min_stake_ckb` (`403 stake_invalid` with a `reason`) not used by another peer's registration (`403 stake_in_use`); it is re-checked on every request, also when the cached attestation is returned. Validity = config cell `clock_ms` + `attest_validity_days` (default 7 days). The same attestation is returned from a cache for `attest_cache_s` (default 3600 s).
 
+## Ranking and stake
+
+In registry mode (`csr_registry_code_hash` and `config_type_args` both set) only runners whose registry cell has stake status `deposited` and whose service key matches the cell are ranked. All other runners are listed by `GET /v1/{network}/runners` with `rank: null` and their `stake_status` (`deposited`, `withdrawn`, `invalid`, `duplicate` or `none`), are not counted in `runner_count` or `asn_peers`, and are left out of the epoch leaves. Leaving the monitor ("Join off") means having no registry cell: the stake status becomes `none` and the rank disappears. Without registry mode ranking is unchanged.
+
+## Score
+
+`score_v1` is **frozen**. Score = 100 × (0.45·A30 + 0.15·A365 + 0.15·S30 + 0.15·F30 + 0.10·T), with weights A30 0.45, A365 0.15, S30 0.15, F30 0.15, T 0.10 (sum 1). A30/A365 are the availability over 30/365 days, S30 the share of ok probes in sync, F30 the share of passed P2P checks, T the age (capped at 365 days). The peer-count term P (5 %) was dropped; its weight went to A30 (decisions D11 B, D18 A). Any change to the formula needs `score_v2` and a new formula byte in the epoch (byte 29). A runner with the flag `identity_mismatch` or `bad_binding` scores 0.
+
 ## Epoch data and leaves
+
+The epoch summary (`GET /v1/{network}/epochs/{n}`) carries `built_at` (unix seconds) and `late` (true when built more than 1 day after the epoch's end). An epoch counts as published only after its stat cell transaction is committed; the monitor publishes one epoch per pass (the newest unpublished one, older ones are skipped because each update replaces the data) and sends a dropped transaction again.
 
 Every Monday 00:00 UTC (epoch boundaries) the monitor builds a Merkle tree over all ranked runners, sorted by runner_id.
 
