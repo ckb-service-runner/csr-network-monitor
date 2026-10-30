@@ -1,19 +1,62 @@
-"""External P2P full-node check: runs a helper command and verifies the block hashes it reports."""
+"""Node identity: P2P-key proofs and the daily check of each runner's peer through the monitor's own node."""
+import hashlib
 import ipaddress
-import json
 import os
 import random
-import shlex
-import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
+from .base58 import b58encode
 from .schedule import _unit, schedule_secret
 
 
-class P2PError(Exception):
-    pass
+IDENTITY_PREFIX = "CSR-NODE-IDENTITY-v1"
+
+
+def peer_id_from_pubkey(pk: bytes) -> str:
+    """libp2p peer ID of a secp256k1 key as CKB derives it: base58(0x12 0x20 SHA-256(pubkey))."""
+    return b58encode(b"\x12\x20" + hashlib.sha256(bytes(pk)).digest())
+
+
+def identity_message(peer_id, service_pubkey, network, ts) -> str:
+    return f"{IDENTITY_PREFIX}\n{peer_id}\n{service_pubkey}\n{network}\n{ts}"
+
+
+def _hex_int(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        try:
+            return int(v, 16)
+        except ValueError:
+            return None
+    return None
+
+
+def evaluate_peer(peers, peer_id, *, chain, sync_threshold) -> str:
+    """Judge one runner's peer in the monitor node's `get_peers` result."""
+    peer = next((p for p in peers or [] if isinstance(p, dict) and p.get("node_id") == peer_id), None)
+    if peer is None:
+        return "not_connected"
+    ss = peer.get("sync_state")
+    if not isinstance(ss, dict):
+        return "not_connected"
+    number = _hex_int(ss.get("best_known_header_number"))
+    hsh = ss.get("best_known_header_hash")
+    if number is None or not isinstance(hsh, str):
+        return "not_connected"
+    tip = chain.tip()[0]
+    if number < tip - sync_threshold:
+        return "behind"
+    if number > tip + sync_threshold:
+        return "wrong_chain"
+    if number <= tip:
+        expected = chain.block_hash(number)
+        if expected is None or str(expected).lower() != hsh.lower():
+            return "wrong_chain"
+    return "ok"
 
 
 def choose_heights(tip, rng, count_recent=2, count_old=2, recent_window=1000) -> list[int]:
@@ -46,109 +89,67 @@ def address_for(runner):
     return f"/ip{ip.version}/{ip}/tcp/{port}"
 
 
-class P2PChecker:
-    def __init__(self, cmd, timeout_s, network):
-        self.cmd = cmd
-        self.timeout_s = timeout_s
-        self.network = network
-
-    def run(self, request: dict) -> dict:
-        try:
-            argv = shlex.split(self.cmd)
-            if not argv:
-                raise P2PError("empty p2p check command")
-            proc = subprocess.run(argv, input=json.dumps(request), capture_output=True,
-                                  text=True, timeout=self.timeout_s)
-        except subprocess.TimeoutExpired:
-            raise P2PError("p2p helper timed out") from None
-        except (OSError, ValueError) as e:
-            raise P2PError(f"cannot start p2p helper: {type(e).__name__}") from None
-        if proc.returncode != 0:
-            raise P2PError(f"p2p helper exited with {proc.returncode}")
-        try:
-            out = json.loads(proc.stdout)
-        except ValueError:
-            raise P2PError("p2p helper output is not JSON") from None
-        if not isinstance(out, dict) or not isinstance(out.get("served"), list):
-            raise P2PError("p2p helper output has no 'served' list")
-        return out
-
-
-def run_p2p_check(store, chain, checker, runner, *, now, rng) -> dict:
-    rid = runner["runner_id"]
-    heights = choose_heights(chain.tip()[0], rng)
-    request = {"v": 1, "network": checker.network, "peer_id": runner["peer_id"],
-               "address": address_for(runner), "heights": heights,
-               "timeout_s": checker.timeout_s}
-    seen, served, latency = None, 0, None
-    try:
-        out = checker.run(request)
-    except P2PError:
-        result = "error"
-    else:
-        seen = out.get("peer_id_seen")
-        if not isinstance(seen, str):
-            seen = None
-        lat = out.get("latency_ms")
-        latency = lat if isinstance(lat, int) and not isinstance(lat, bool) else None
-        good = set()
-        for item in out["served"]:
-            if isinstance(item, dict) and isinstance(item.get("height"), int):
-                good.add((item["height"], str(item.get("hash", "")).lower()))
-        served = sum(1 for h in heights if (h, str(chain.block_hash(h)).lower()) in good)
-        if seen is not None and seen != runner["peer_id"]:
-            result = "identity_mismatch"
-        elif seen is None or served != len(heights):
-            result = "fail"
-        else:
-            result = "ok"
-    if result == "identity_mismatch":
-        store.set_flag(rid, "identity_mismatch", True)
-    elif result == "ok":
-        store.set_flag(rid, "identity_mismatch", False)
-    store.record_p2p_check(rid, ts=now, heights=heights, served=served, latency_ms=latency,
-                           peer_id_seen=seen, result=result)
-    return {"runner_id": rid, "result": result, "served": served, "peer_id_seen": seen,
-            "heights": heights}
-
-
 class P2PScheduler:
-    def __init__(self, store, chain, checker, config, rng=None, clock=time.time, secret=None):
+    """Once per `p2p_interval_s` per active runner: is its peer connected to our node and on our chain?"""
+
+    def __init__(self, store, chain, config, rng=None, clock=time.time, paused=None, secret=None):
         self.store = store
         self.chain = chain
-        self.checker = checker
         self.config = config
         self.rng = rng or random.Random()
         self.clock = clock
+        self.paused = paused or (lambda: False)
+        # Stateless plan (no growing map, F-SEC-012): a keyed hash of runner and period.
         self._schedule_key = schedule_secret(secret if secret is not None else os.urandom(32))
 
-    def _plan(self, rid, period, start, P):
-        return start + 0.05 * P + _unit(self._schedule_key, f"{rid}:{period}") * 0.85 * P
+    def planned_time(self, rid, period):
+        P = self.config.p2p_interval_s
+        return period * P + 0.05 * P + _unit(self._schedule_key, f"{rid}:{period}") * 0.85 * P
 
-    def run_due(self, now=None) -> list:
-        if self.checker is None:
-            return []
-        now = self.clock() if now is None else now
+    def due(self, now) -> list:
         P = self.config.p2p_interval_s
         period = int(now // P)
         start = period * P
-        due = []
+        out = []
         for r in self.store.list_runners(("active",)):
-            planned = self._plan(r["runner_id"], period, start, P)
-            if now < planned:
+            if not r["peer_id"] or now < self.planned_time(r["runner_id"], period):
                 continue
             last = self.store.last_p2p_check(r["runner_id"])
             if last is not None and last["ts"] >= start:
                 continue
-            due.append(r)
+            out.append(r)
+        return out
+
+    def run_due(self, now=None) -> list:
+        now = self.clock() if now is None else now
+        if self.paused():
+            return []
+        due = self.due(now)
         if not due:
             return []
-        seeds = [self.rng.random() for _ in due]
-
-        def work(args):
-            r, seed = args
-            return run_p2p_check(self.store, self.chain, self.checker, r, now=int(now),
-                                 rng=random.Random(seed))
-
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            return list(ex.map(work, zip(due, seeds)))
+        ts = int(now)
+        try:
+            peers = self.chain.get_peers()
+            if not isinstance(peers, list):
+                raise ValueError("get_peers did not return a list")
+            results = [(r, evaluate_peer(peers, r["peer_id"], chain=self.chain,
+                                         sync_threshold=self.config.sync_threshold)) for r in due]
+        except Exception as e:  # noqa: BLE001 - any node failure: record and wait for the next period
+            reason = f"node_error: {type(e).__name__}"
+            out = []
+            for r in due:
+                self.store.record_p2p_check(r["runner_id"], ts=ts, heights=[], served=0,
+                                            latency_ms=None, peer_id_seen=None, result="error",
+                                            reason=reason)
+                out.append({"runner_id": r["runner_id"], "result": "error", "reason": reason})
+            return out
+        out = []
+        for r, verdict in results:
+            result = "ok" if verdict == "ok" else "fail"
+            reason = None if verdict == "ok" else verdict
+            seen = None if verdict == "not_connected" else r["peer_id"]
+            self.store.record_p2p_check(r["runner_id"], ts=ts, heights=[], served=1 if seen else 0,
+                                        latency_ms=None, peer_id_seen=seen, result=result,
+                                        reason=reason)
+            out.append({"runner_id": r["runner_id"], "result": result, "reason": reason})
+        return out

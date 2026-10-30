@@ -8,6 +8,7 @@ SCORE_FORMULA = "score_v1"
 # byte in the epoch. The peer-count term P was dropped (D11 B, D18 A); its 5 % went to A30.
 WEIGHTS = {"a30": 0.45, "a365": 0.15, "s30": 0.15, "f30": 0.15, "t": 0.10}
 _BAD_FLAGS = ("identity_mismatch", "bad_binding")
+IDENTITY_PROOF_MAX_AGE_S = 7 * 86400
 
 
 def _days_between(a, b) -> int:
@@ -57,17 +58,41 @@ def _stake_status(store, runner) -> str:
     return "none"
 
 
-def rank_runners(store, today, provisional_days=7, require_stake=False) -> list:
+def identity_ok(runner, *, require, now) -> bool:
+    """True when proofs are not required, else when the runner proved its node's P2P key within 7 days."""
+    if not require:
+        return True
+    at = runner.get("identity_proven_at")
+    return at is not None and now - at <= IDENTITY_PROOF_MAX_AGE_S
+
+
+def unranked_reason(item):
+    if item["provisional"]:
+        return "provisional"
+    if any(f in item["flags"] for f in _BAD_FLAGS):
+        return "flagged"
+    if item.get("stake_required") and item["stake_status"] != "deposited":
+        return "stake"
+    if not item["identity_ok"]:
+        return "identity_unproven"
+    return None
+
+
+def rank_runners(store, today, provisional_days=7, require_stake=False, *, require_identity=False,
+                 now=None) -> list:
+    if now is None:
+        now = day_start(today) + 86400 - 1
     items = []
     for r in store.list_runners(("active",)):
         m = runner_metrics(store, r["runner_id"], today, provisional_days, runner=r)
         m.update(runner_id=r["runner_id"], rank=None, status=r["status"], flags=list(r["flags"]),
                  country=r["country"], region=r["region"], asn=r["asn"],
-                 first_seen=r["first_seen"], stake_status=_stake_status(store, r))
+                 first_seen=r["first_seen"], stake_status=_stake_status(store, r),
+                 stake_required=require_stake, identity_proven_at=r.get("identity_proven_at"),
+                 identity_ok=identity_ok(r, require=require_identity, now=now))
+        m["unranked_reason"] = unranked_reason(m)
         items.append(m)
-    ranked = [i for i in items
-              if not i["provisional"] and not any(f in i["flags"] for f in _BAD_FLAGS)
-              and (not require_stake or i["stake_status"] == "deposited")]
+    ranked = [i for i in items if i["unranked_reason"] is None]
     ranked.sort(key=lambda i: (-i["score"], i["first_seen"], i["runner_id"]))
     for n, i in enumerate(ranked, 1):
         i["rank"] = n
@@ -86,8 +111,10 @@ def rank_runners(store, today, provisional_days=7, require_stake=False) -> list:
     return out
 
 
-def update_scores(store, today, provisional_days=7, require_stake=False) -> list:
-    ranking = rank_runners(store, today, provisional_days, require_stake)
+def update_scores(store, today, provisional_days=7, require_stake=False, *, require_identity=False,
+                  now=None) -> list:
+    ranking = rank_runners(store, today, provisional_days, require_stake,
+                           require_identity=require_identity, now=now)
     for i in ranking:
         store.set_daily_score(i["runner_id"], today, i["score"])
     return ranking
@@ -116,7 +143,8 @@ def _largest_share(counts) -> float:
 
 def network_summary(store, today, config, ranking=None) -> dict:
     if ranking is None:
-        ranking = rank_runners(store, today, config.provisional_days, stake_required(config))
+        ranking = rank_runners(store, today, config.provisional_days, stake_required(config),
+                               require_identity=getattr(config, "require_identity_proof", False))
     ranked = [i for i in ranking if i["rank"] is not None]
     provisional = sum(1 for i in ranking if i["provisional"])
     excluded = sum(1 for i in ranking if i["rank"] is None and not i["provisional"])

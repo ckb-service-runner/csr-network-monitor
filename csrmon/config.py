@@ -33,9 +33,9 @@ class Config:
     geo_country_csv: str = ""
     geo_asn_csv: str = ""
     geo_city_csv: str = ""
-    p2p_check_cmd: str = ""
-    p2p_check_timeout_s: int = 120
     p2p_interval_s: int = 86400
+    p2p_public_address: str = ""
+    require_identity_proof: bool = False
     rate_limit_per_min: int = 60
     rate_limit_post_per_min: int = 20
     http_timeout_s: int = 10
@@ -84,7 +84,7 @@ _NONEMPTY = _REQUIRED
 _MIN = {
     "listen_port": 0, "probe_interval_s": 1, "probe_jitter_s": 0,
     "probe_workers": 1, "sync_threshold": 0, "crosscheck_interval_s": 1,
-    "aggregate_interval_s": 1, "p2p_check_timeout_s": 1, "p2p_interval_s": 1,
+    "aggregate_interval_s": 1, "p2p_interval_s": 1,
     "rate_limit_per_min": 1, "rate_limit_post_per_min": 1, "http_timeout_s": 1,
     "http_max_connections": 1, "gate_min_days": 1, "gate_min_runners": 1,
     "provisional_days": 0, "probe_retention_days": 1,
@@ -94,6 +94,12 @@ _MIN = {
     "min_stake_ckb": 1, "attest_max_clock_age_s": 600,
 }
 _HASH_TYPES = ("type", "data", "data1", "data2")
+# keys that existed once and were removed; a config that still has them gets a clear message
+_REMOVED = {
+    "p2p_check_cmd": "the external P2P helper was removed; the monitor now checks runners through"
+                     " its own node (set p2p_public_address, see docs/INSTALL.md)",
+    "p2p_check_timeout_s": "the external P2P helper was removed; delete this key",
+}
 
 
 def _check_type(name, value, default):
@@ -133,6 +139,8 @@ def load_config(path) -> Config:
                           "registration scan was removed); delete them from the config")
     known = {f.name: f for f in fields(Config)}
     for k in raw:
+        if k in _REMOVED:
+            raise ConfigError(f"config key {k!r} is no longer supported: {_REMOVED[k]}")
         if k not in known:
             raise ConfigError(f"unknown config key {k!r}")
     for k in _REQUIRED:
@@ -164,6 +172,13 @@ def load_config(path) -> Config:
     for k in ("gate_max_asn_share", "gate_max_country_share"):
         if not 0 <= getattr(cfg, k) <= 1:
             raise ConfigError(f"{k!r} must be between 0 and 1")
+
+    if cfg.p2p_public_address:
+        a = cfg.p2p_public_address
+        parts = a.split("/")
+        if (not a.startswith("/") or "/p2p/" not in a or not parts[-1]
+                or parts[-2] != "p2p" or any(c.isspace() for c in a)):
+            raise ConfigError("'p2p_public_address' must be a multiaddr ending in /p2p/<node id>")
 
     if cfg.config_type_args:
         a = cfg.config_type_args

@@ -129,6 +129,9 @@ def test_nodes_endpoint(env):
     assert a["availability"] == {"d7": round(139 / 144, 4), "d30": round(139 / 144, 4),
                                  "d365": round(139 / 144, 4)}
     assert a["check_type"] == "peer_connected"
+    env["st"].record_p2p_check(rid_of(1), ts=NOW - 47 * 3600, heights=[], served=1, latency_ms=None,
+                               peer_id_seen="QmA", result="ok")
+    assert call(env, "GET", "/v1/nodes/QmA")[2]["check_type"] == "p2p_verified"
     assert a["attestation"] == {"status": "none", "expiry": None}
     assert a["stake"] == {"status": "none", "capacity_ckb": None, "outpoint": None}
     assert a["last_check_at"] == NOW - 600

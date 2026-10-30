@@ -11,13 +11,16 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from . import geo as geo_mod
-from . import netutil, ping, protocol
+from . import netutil, p2p, ping, protocol
 from .schedule import planned_time, schedule_secret
-from .hashing import from_hex
+from .hashing import from_hex, to_hex
 from .prober import _default_post, _is_timeout, slot_of
 
 _EVAL_KEYS = ("peer_id", "service_pubkey", "tip_number", "lag", "in_sync", "csr_version",
               "node_version", "r2_state", "ping_mode")
+IDENTITY_FIELDS = ("peer_id", "service_pubkey", "network", "ts", "p2p_pubkey", "p2p_sig",
+                   "service_sig")
+IDENTITY_MAX_SKEW_S = 300
 _STATUS_REASONS = {400: "rejected_400", 403: "bad_monitor_key", 409: "replay",
                    429: "rate_limited", 503: "node_unavailable"}
 
@@ -446,3 +449,58 @@ class CsrProber:
             self._record(rid, now, "outbound", "fail", ev["failure_reason"], slot=e["slot"],
                          ip=e["ip"], latency_ms=latency)
         return 422, {"result": "fail", "failure_reason": ev["failure_reason"]}
+
+    # ---- node identity (D6 A) ----
+    @staticmethod
+    def _parse_identity(body):
+        if not isinstance(body, dict) or set(body) != set(IDENTITY_FIELDS):
+            raise ValueError("identity proof must have exactly the seven fields")
+        ts = body["ts"]
+        if isinstance(ts, bool) or not isinstance(ts, int):
+            raise ValueError("ts must be an integer")
+        for k in IDENTITY_FIELDS:
+            if k != "ts" and not isinstance(body[k], str):
+                raise ValueError(f"{k} must be a string")
+        for k in ("service_pubkey", "p2p_pubkey"):
+            pk = from_hex(body[k])
+            if len(pk) != 33 or pk[0] not in (2, 3):
+                raise ValueError(f"{k} must be a compressed secp256k1 key")
+        return dict(body)
+
+    def handle_identity(self, body, ip, now=None):
+        now = self.clock() if now is None else now
+        try:
+            b = self._parse_identity(body)
+        except (ValueError, TypeError):
+            return 400, {"error": "bad_request"}
+        if b["network"] != self.config.network:
+            return 400, {"error": "wrong_network"}
+        if abs(now - b["ts"]) > IDENTITY_MAX_SKEW_S:
+            return 400, {"error": "stale"}
+        msg = p2p.identity_message(b["peer_id"], b["service_pubkey"], b["network"], b["ts"])
+        if not (ping.verify(b["p2p_pubkey"], msg, b["p2p_sig"])
+                and ping.verify(b["service_pubkey"], msg, b["service_sig"])):
+            return 401, {"error": "bad_signature"}
+        p2p_pk = from_hex(b["p2p_pubkey"])
+        if p2p.peer_id_from_pubkey(p2p_pk) != b["peer_id"]:
+            return 403, {"error": "peer_mismatch"}
+        peer_id, pub = b["peer_id"], b["service_pubkey"]
+        rid = protocol.runner_id(from_hex(pub))
+        with self._lock:
+            old = self.store.get_runner(rid)
+            if old is None:
+                self.store.upsert_runner(rid, service_pubkey=pub, peer_id=peer_id, p2p_pubkey="",
+                                         reg_outpoint="", mode="outbound", endpoint="", p2p_port=0,
+                                         ranking_opt_in=True, now=now)
+            elif old["peer_id"] != peer_id:
+                self.store.upsert_runner(rid, service_pubkey=old["service_pubkey"], peer_id=peer_id,
+                                         p2p_pubkey=old["p2p_pubkey"],
+                                         reg_outpoint=old["reg_outpoint"], mode=old["mode"],
+                                         endpoint=old["endpoint"], p2p_port=old["p2p_port"],
+                                         ranking_opt_in=old["ranking_opt_in"], now=now)
+            self.store.set_identity(rid, p2p_pubkey=to_hex(p2p_pk), proven_at=int(now))
+            self.store.set_flag(rid, "identity_mismatch", False)
+            for other in self.store.runners_with_peer(peer_id):
+                if other["runner_id"] != rid:
+                    self.store.set_flag(other["runner_id"], "identity_mismatch", True)
+        return 200, {"ok": True}

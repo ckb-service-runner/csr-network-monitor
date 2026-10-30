@@ -122,7 +122,10 @@ def test_bad_binding_sets_and_clears_the_flag(tmp_path):
 def test_peer_connected_label():
     api_src = open(os.path.join(ROOT, "csrmon", "api.py")).read()
     assert '"peer_connected"' in api_src
-    assert '"p2p_verified"' not in api_src
+    # Integration (Oct 2026): node-identity-monitor gives "p2p_verified" back its real meaning (a passed daily
+    # check over the monitor's own node), so it may appear in api.py again; it must come from that check.
+    if '"p2p_verified"' in api_src:
+        assert "last_p2p_check" in api_src or "p2p_checks" in api_src
     assert "peer_connected" in open(os.path.join(ROOT, "docs", "PROTOCOL.md")).read()
 
 

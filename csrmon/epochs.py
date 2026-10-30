@@ -187,7 +187,9 @@ def build_epoch(store, chain, secret, config, n, *, now):
     else:
         prev_hash = b"\x00" * 32
     ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days,
-                                    scoring.stake_required(config))
+                                    scoring.stake_required(config),
+                                    require_identity=getattr(config, "require_identity_proof", False),
+                                    now=end - 1)
     items = sorted((i for i in ranking if i["first_seen"] < end
                     and (not scoring.stake_required(config) or i["stake_status"] == "deposited")),
                    key=lambda i: from_hex(i["runner_id"]))
