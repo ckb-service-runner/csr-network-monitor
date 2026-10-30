@@ -97,6 +97,11 @@ class RpcChain:
     def get_peers(self):
         return self.call("get_peers", [])
 
+    def local_node_id(self):
+        """The node ID of the monitor's own node (`local_node_info`)."""
+        r = self.call("local_node_info", [])
+        return r.get("node_id") if isinstance(r, dict) else None
+
     def get_transaction(self, tx_hash):
         """`{"status": "committed"|"pending"|"proposed"|"rejected"|"unknown", "block": int|None}`."""
         r = self.call("get_transaction", [tx_hash])
