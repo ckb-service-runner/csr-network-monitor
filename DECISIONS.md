@@ -189,3 +189,8 @@ Registry v3, `CSR-ATTEST-v2`, `csr-config-type`, endpoints (contracts-v3; D20 A,
   - `test_stake_scan.py`: `reg_cell` builds v3 cells; `test_invalid_cells` uses a 20-byte lock as the bad one (32 bytes are valid now), adds a valid 32-byte-lock cell and a v2 cell that must be invalid (counts 2 valid / 3 invalid); configs get `CONFIG_LINES`.
   - `test_v2_daemon.py`: v3 registry cell, `csr-config-type` keys in the config, `csr_config_type_hash` with the new signature, the attestation is checked with `verify_attestation_v2` and names the stake.
   - New: `acceptance/fakes_v3.py`, `acceptance/test_monitor_v3_wiring.py`.
+## mon-docs
+- The old runner owner name was replaced everywhere by `ckb-service-runner`; the README links `https://github.com/ckb-service-runner/ckb-service-runner`.
+- No `tools/shrink_city.py`: the city CSV is snapped while loading (`csrmon/geo.py`), so `INSTALL.md` gives the measured memory (about 500 MB peak plus swap on the reference host with the raw CSV) and mentions no tool.
+- `PROTOCOL.md`: stat cell is a fixed binary layout of 159 bytes (not Molecule); the epoch list is documented as not paged (no code change); probe failure reasons copied from `csrprobe.py`; the plain binding is not claimed to be signed by the P2P key, the identity proof is `CSR-NODE-IDENTITY-v1`.
+- The first transfer to a runner wallet is not stated here; the README refers to the runner README.

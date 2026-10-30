@@ -105,7 +105,7 @@ The map on the public page needs the **DB-IP City Lite** CSV (monthly release, f
 
 Coordinates are reduced to the centre of a 2° × 2° cell while the file is loaded; only that cell is stored per runner and published via `GET /v1/locations`. Without the file, runners are listed as "unknown" and do not appear on the map.
 
-The data is licensed **CC BY 4.0**; the public page shows the required credit to DB-IP. Refresh the file monthly (replace it and restart). Memory use: the snapped, merged ranges take roughly 50–150 MB for the full file; loading takes some seconds at start-up.
+The data is licensed **CC BY 4.0**; the public page shows the required credit to DB-IP. Refresh the file monthly (replace it and restart). Memory use (measured on the reference host with the raw CSV): about 500 MB peak while loading, and the host needs swap or spare memory for it; afterwards the snapped, merged ranges are much smaller. There is no pre-shrinking tool; plan the peak when sizing the host.
 
 ## P2P address of the monitor node
 

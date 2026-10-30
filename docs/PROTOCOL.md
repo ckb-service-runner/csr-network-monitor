@@ -1,6 +1,6 @@
 # CSR wire protocol (monitor side)
 
-**CSR (CKB Service Runner, `psawyerberlin/ckb-service-runner`) is the source of truth.** The monitor speaks the protocols defined there:
+**CSR (CKB Service Runner, `ckb-service-runner/ckb-service-runner`) is the source of truth.** The monitor speaks the protocols defined there:
 
 - `spec/ping-protocol.md` – ping protocol v1 (challenge, binding, answer, check-in)
 - `spec/registry.md` – registry cell, attestation, config cell
@@ -21,7 +21,7 @@ This file summarises what the monitor implements; on any difference the CSR spec
 Fields are joined with `\n`, no trailing newline, numbers in decimal.
 
 - `CSR-PING-CHALLENGE-v1\n{nonce}\n{height}\n{issued_at}` – signed by the monitor.
-- `CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}` – signed by the P2P/node key (binding_sig); proves the service key belongs to the node id.
+- `CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}` – the plain binding `binding_sig`, checked against the service key and the peer id. It is *not* signed by the P2P key; the identity proof `CSR-NODE-IDENTITY-v1` is what ties the service key to the node's P2P identity.
 - `CSR-PING-ANSWER-v1\n` + the 13 answer fields in order: `nonce, peer_id, service_pubkey, binding_sig, network, csr_version, node_version, r2_state, tip_number, tip_hash, block_hash_at_height, uptime_s, ping_mode` – signed by the service key.
 - `CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}` – signed by the node's P2P key (`p2p_sig`) **and** by the service key (`service_sig`); body of `POST /v1/identity`.
 - `CSR-ATTEST-v2` (monitor-v3, D21 A): attestation digest = `ckb_blake2b("CSR-ATTEST-v2" ‖ AttestationBodyV2)` with
@@ -34,7 +34,7 @@ Fields are joined with `\n`, no trailing newline, numbers in decimal.
 
 Inbound mode. The monitor sends `{"nonce","height","issued_at","monitor_sig"}` (exactly these fields) and receives `{"answer": {13 fields}, "sig"}` (`tip_number`, `uptime_s` are numbers, the rest strings). The node answers 400 (bad nonce / not fresh, `|now − issued_at| > 60 s` / `height` above its tip), 403 (bad monitor signature), 409 (nonce replay), 429 (rate limit 10/min/IP), 503 (node data unavailable).
 
-The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync. An answer with an empty `block_hash_at_height` and a `tip_number` below the challenge height is a reachable, not-in-sync probe (`ok`, `in_sync: false`, lag from the tips); an empty hash with `tip_number >= height` is `wrong_block_hash`. A runner's 400 `{"error": "clock_skew"}` is recorded with reason `clock_skew` (other 400s: `rejected_400`).
+The monitor marks a probe `fail` with one of these reasons: `bad_format`, `late`, `wrong_network`, `bad_nonce`, `bad_signature`, `bad_binding`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, `tip_below_height`, `pubkey_changed`; from the HTTP status of the node `clock_skew` (400 with `{"error": "clock_skew"}`), `rejected_400` (other 400s), `bad_monitor_key` (403), `replay` (409), `rate_limited` (429), `node_unavailable` (503), `bad_status` (other); transport reasons `timeout`, `unreachable`; and slot reasons `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync. An answer with an empty `block_hash_at_height` and a `tip_number` below the challenge height is a reachable, not-in-sync probe (`ok`, `in_sync: false`, lag from the tips); an empty hash with `tip_number >= height` is `wrong_block_hash`.
 
 **Tip challenge.** The challenge `height` is drawn from the last 100 blocks: `tip − randrange(1, 101)` (clamped at 0), `tip` being the monitor's tip. After the signature, binding, peer and `block_hash_at_height` checks, the monitor checks the answer's tip, with `mtip` the monitor's tip:
 
@@ -200,7 +200,7 @@ Every Monday 00:00 UTC (epoch boundaries) the monitor builds a Merkle tree over 
 
 Leaf (47 bytes): `runner_id(32) ‖ score×100 u16 ‖ a30×10000 u16 ‖ a365×10000 u16 ‖ f30×10000 u16 ‖ country(2 ASCII, "??" unknown) ‖ asn u32 ‖ flags u8` (flags: 1 provisional, 2 identity mismatch, 4 bad binding).
 
-Epoch data (159 bytes) stored as the stat cell data:
+Epoch data is a fixed binary layout of 159 bytes (not Molecule), stored as the stat cell data:
 
 | Offset | Size | Field |
 |---|---|---|
@@ -215,6 +215,8 @@ Epoch data (159 bytes) stored as the stat cell data:
 | 30 | 32 | Merkle root |
 | 62 | 32 | hash of the previous epoch data (zeros for the first) |
 | 94 | 65 | monitor signature over `ckb_blake2b("CSR/v1/epoch" ‖ data[0:94])` |
+
+`GET /v1/{network}/epochs` returns all epochs in one reply (`{"items": [...]}`); the list is not paged and `limit` and `cursor` are ignored.
 
 ## Merkle rules
 
