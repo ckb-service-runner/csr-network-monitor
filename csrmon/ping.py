@@ -27,6 +27,10 @@ def binding_message(peer_id, service_pubkey, network) -> str:
     return f"CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}"
 
 
+def checkin_message(peer_id, service_pubkey, network, ts) -> str:
+    return f"CSR-CHECKIN-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}"
+
+
 def answer_message(answer: dict) -> str:
     return "CSR-PING-ANSWER-v1\n" + "\n".join(str(answer[k]) for k in ANSWER_FIELDS)
 
@@ -111,4 +115,11 @@ def parse_checkin(body) -> dict:
         if not isinstance(body.get(k), str):
             raise ValueError(f"{k} must be a string")
         out[k] = body[k]
+    if "ts" in body or "checkin_sig" in body:
+        ts, sig = body.get("ts"), body.get("checkin_sig")
+        if isinstance(ts, bool) or not isinstance(ts, int) or ts < 0:
+            raise ValueError("ts must be a non-negative integer")
+        if not isinstance(sig, str):
+            raise ValueError("checkin_sig must be a string")
+        out["ts"], out["checkin_sig"] = ts, sig
     return out

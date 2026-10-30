@@ -42,6 +42,7 @@ class Config:
     http_max_connections: int = 64
     trusted_proxies: list = field(default_factory=lambda: ["127.0.0.1", "::1"])
     min_stake_ckb: int = 10000
+    require_checkin_sig: bool = False
     gate_min_days: int = 365
     gate_min_runners: int = 60
     gate_max_asn_share: float = 0.25

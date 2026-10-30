@@ -298,7 +298,11 @@ def test_unanswered_challenge_and_known_runner(tmp_path):
     status, body = do_checkin(p, node, S + 30)
     p.handle_answer(answer_for(node, body["challenge"]), "1.1.1.1", S + 31)   # runner exists now
     clock.t = S + I + 20
-    status, body = do_checkin(p, node, S + I + 20)
+    cb = node.checkin_body()                                   # v1.1: only a signed check-in can miss
+    cb["ts"] = S + I + 20
+    cb["checkin_sig"] = ping.sign(sk(5), ping.checkin_message(
+        cb["peer_id"], cb["service_pubkey"], cb["network"], cb["ts"]))
+    status, body = p.handle_checkin(cb, "5.1.2.3", S + I + 20)
     assert status == 200
     recs = p.run_due(S + I + 81)                                # 61 s later, no answer
     assert [(r["runner_id"], r["result"], r["failure_reason"]) for r in recs] == \

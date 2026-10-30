@@ -148,3 +148,11 @@ Phase 1 (F-SEC-005/006/007/012/013/014/017, F-MON-015/016).
 - `build_epoch` computes `late` as `now - end > 86400`. Existing stored epochs have no `built_at`/`late`.
 - Ranking with each stake status was already covered by `test_stake_scan.py`; no new test.
 - No existing repository test was changed.
+## ping-v1-1-monitor
+- Check-in v1.1: `ts` + `checkin_sig` verified after the binding check and before the pause/slot logic. Replay memory is a dict keyed by (service key, ts), entries expire after 120 s, capped at 10000 (oldest dropped). A pair is remembered even if the check-in is then refused for a slot reason.
+- Open challenges carry a `fresh` flag; `_expire_open` records `no_answer` only for fresh ones, unsigned ones expire with a debug log.
+- `require_checkin_sig` (bool, default false). Plan: switch it on once the runners on the network report version >= the v1.1 release.
+- Lag answer (empty hash, tip below height) is `ok`/`in_sync: false`; it is checked after the signature, binding and nonce checks.
+- `csrprobe.reject_reason` maps 400 `{"error":"clock_skew"}` to `clock_skew`.
+- `docs/PROTOCOL.md`: the `POST /v1/attest` table is replaced by a pointer to the runner repository's `spec/monitor-public-api.md`.
+- Changed `acceptance/test_v2_csrprobe.py::test_unanswered_challenge_and_known_runner`: its check-in is now signed (`ts` + `checkin_sig`), because an unsigned check-in's expiry is no longer recorded as `no_answer`.

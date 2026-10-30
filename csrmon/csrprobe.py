@@ -1,5 +1,6 @@
 """CSR node probing: ping protocol v1 challenges, outbound check-ins and slot bookkeeping."""
 import ipaddress
+import logging
 import json
 import math
 import random
@@ -25,6 +26,10 @@ MAX_OPEN_CHALLENGES = 10000
 # recent fork (the two nodes briefly follow different tips), not a miss.
 FORK_TOLERANCE_BLOCKS = 3
 
+_REPLAY_TTL_S = 120
+_REPLAY_MAX = 10000
+log = logging.getLogger(__name__)
+
 __all__ = ["slot_of", "evaluate_answer", "CsrProber", "FORK_TOLERANCE_BLOCKS"]
 
 
@@ -32,6 +37,17 @@ def _fail(reason) -> dict:
     out = {"result": "fail", "failure_reason": reason}
     out.update({k: None for k in _EVAL_KEYS})
     return out
+
+
+def reject_reason(status, raw) -> str:
+    if status == 400:
+        try:
+            body = json.loads(raw)
+        except (ValueError, TypeError):
+            body = None
+        if isinstance(body, dict) and body.get("error") == "clock_skew":
+            return "clock_skew"
+    return _STATUS_REASONS.get(status, "bad_status")
 
 
 def evaluate_answer(challenge, body, *, chain, network, elapsed_s, deadline_s, sync_threshold,
@@ -52,6 +68,13 @@ def evaluate_answer(challenge, body, *, chain, network, elapsed_s, deadline_s, s
         return _fail("bad_binding")
     if expected_peer_id is not None and a["peer_id"] != expected_peer_id:
         return _fail("peer_id_mismatch")
+    if a["block_hash_at_height"] == "" and a["tip_number"] < challenge["height"]:
+        lag = max(0, chain.tip()[0] - a["tip_number"])
+        return {"result": "ok", "failure_reason": None, "peer_id": a["peer_id"],
+                "service_pubkey": a["service_pubkey"], "tip_number": a["tip_number"],
+                "lag": lag, "in_sync": False, "csr_version": a["csr_version"],
+                "node_version": a["node_version"], "r2_state": a["r2_state"],
+                "ping_mode": a["ping_mode"]}
     expected = chain.block_hash(challenge["height"])
     if expected is None or a["block_hash_at_height"].lower() != str(expected).lower():
         return _fail("wrong_block_hash")
@@ -90,6 +113,7 @@ class CsrProber:
         self.paused = False
         self._lock = threading.RLock()
         self._schedule_key = schedule_secret(monitor_secret)
+        self._seen_checkins = {}  # (service_pubkey, ts) -> time seen
         self._open = {}          # nonce -> entry dict of an outbound challenge
         self._next_slot = {}     # runner_id -> first outbound slot not yet closed
         self._paused_slots = set()
@@ -204,7 +228,7 @@ class CsrProber:
         elapsed = time.monotonic() - t0
         latency = int(elapsed * 1000)
         if status != 200:
-            out = _fail(_STATUS_REASONS.get(status, "bad_status"))
+            out = _fail(reject_reason(status, raw))
         else:
             try:
                 answer = json.loads(raw)
@@ -265,6 +289,9 @@ class CsrProber:
                 del self._open[n]
         out = []
         for _, e in old:
+            if not e.get("fresh"):
+                log.debug("unsigned check-in of %s expired silently", e["runner_id"])
+                continue
             if self.store.get_runner(e["runner_id"]) is not None:
                 out.append(self._record(e["runner_id"], e["opened_at"], "outbound", "fail",
                                         "no_answer", slot=e["slot"], ip=e["ip"]))
@@ -328,6 +355,27 @@ class CsrProber:
         if not ping.verify_binding(c["peer_id"], c["service_pubkey"], c["network"],
                                    c["binding_sig"]):
             return 401, {"error": "bad_signature"}
+        fresh = False
+        if "ts" in c:
+            if abs(now - c["ts"]) > 60:
+                return 400, {"error": "stale_checkin"}
+            if not ping.verify(c["service_pubkey"], ping.checkin_message(
+                    c["peer_id"], c["service_pubkey"], c["network"], c["ts"]), c["checkin_sig"]):
+                return 401, {"error": "bad_signature"}
+            key = (c["service_pubkey"], c["ts"])
+            with self._lock:
+                seen = self._seen_checkins
+                if len(seen) >= _REPLAY_MAX or any(now - t > _REPLAY_TTL_S for t in seen.values()):
+                    for k in [k for k, t in seen.items() if now - t > _REPLAY_TTL_S]:
+                        del seen[k]
+                    while len(seen) >= _REPLAY_MAX:
+                        del seen[next(iter(seen))]
+                if key in seen:
+                    return 400, {"error": "replay"}
+                seen[key] = now
+            fresh = True
+        elif self.config.require_checkin_sig:
+            return 400, {"error": "checkin_sig_required"}
         if self.paused:
             return 503, {"error": "monitor_paused"}
         interval = self.config.probe_interval_s
@@ -366,7 +414,8 @@ class CsrProber:
                 return refused
             self._open[challenge["nonce"]] = {
                 "runner_id": rid, "peer_id": c["peer_id"], "service_pubkey": c["service_pubkey"],
-                "ip": ip, "opened_at": now, "slot": slot, "challenge": challenge}
+                "ip": ip, "opened_at": now, "slot": slot, "challenge": challenge,
+                "fresh": fresh}
         return 200, {"challenge": challenge}
 
     def handle_answer(self, body, ip, now=None):

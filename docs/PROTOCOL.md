@@ -31,7 +31,7 @@ Fields are joined with `\n`, no trailing newline, numbers in decimal.
 
 Inbound mode. The monitor sends `{"nonce","height","issued_at","monitor_sig"}` (exactly these fields) and receives `{"answer": {13 fields}, "sig"}` (`tip_number`, `uptime_s` are numbers, the rest strings). The node answers 400 (bad nonce / not fresh, `|now − issued_at| > 60 s` / `height` above its tip), 403 (bad monitor signature), 409 (nonce replay), 429 (rate limit 10/min/IP), 503 (node data unavailable).
 
-The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync.
+The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync. An answer with an empty `block_hash_at_height` and a `tip_number` below the challenge height is a reachable, not-in-sync probe (`ok`, `in_sync: false`, lag from the tips); an empty hash with `tip_number >= height` is `wrong_block_hash`. A runner's 400 `{"error": "clock_skew"}` is recorded with reason `clock_skew` (other 400s: `rejected_400`).
 
 **Tip challenge.** The challenge `height` is drawn from the last 100 blocks: `tip − randrange(1, 101)` (clamped at 0), `tip` being the monitor's tip. After the signature, binding, peer and `block_hash_at_height` checks, the monitor checks the answer's tip, with `mtip` the monitor's tip:
 
@@ -48,12 +48,14 @@ The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_
 
 ### `POST /v1/checkin` and `POST /v1/answer` (on the monitor, outbound mode)
 
-For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig","network","csr_version"}`.
+For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig","network","csr_version"}`, in v1.1 plus `ts` (non-negative integer, seconds) and `checkin_sig` (string). `checkin_sig` is the service key's signature of `CSR-CHECKIN-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}`. Both fields must be present or both absent (else 400 `bad_request`).
+
+A check-in with `ts` is *fresh* if `|now − ts| <= 60 s` (else 400 `stale_checkin`), the signature is valid (else 401 `bad_signature`) and the pair (service key, `ts`) was not seen in the last 2 minutes (else 400 `replay`; the memory is bounded). Only a fresh check-in whose challenge expires unanswered is recorded as `no_answer`. An unsigned (v1) check-in still gets a challenge during the transition, but its expiry is not recorded. With config `require_checkin_sig` (default false) unsigned check-ins are refused with 400 `checkin_sig_required`.
 
 | Route | Status | Body | Meaning |
 |---|---|---|---|
 | checkin | 200 | `{"challenge": {...}}` | challenge issued |
-| checkin | 400 | `bad_request`, `wrong_network` | malformed body / other network |
+| checkin | 400 | `bad_request`, `wrong_network`, `stale_checkin`, `replay`, `checkin_sig_required` | malformed body / other network / `ts` outside ±60 s / (key, `ts`) seen before / unsigned check-in refused |
 | checkin | 401 | `bad_signature` | binding signature invalid |
 | checkin | 413 | `too_large` | body too large |
 | checkin | 429 | `slot_done`, `challenge_open`, `rate_limited` | the slot already has an outcome / a challenge is open / too many requests (`rate_limit_post_per_min`, default 20 per client IP, counted separately from the GET limit `rate_limit_per_min` and checked before signatures or RPC calls; `Retry-After` is set) |
@@ -70,18 +72,7 @@ A correct answer creates the runner (mode `outbound`).
 
 Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = out point text `0x<64 hex>:<index>` of the Nervos DAO deposit); reply is CSR's attestation file `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature","monitor_pubkey"}` (input of `csr register prepare`).
 
-| Status | Body | Meaning |
-|---|---|---|
-| 200 | attestation | issued (or cached) |
-| 400 | `bad_request`, `wrong_network` | malformed / other network |
-| 401 | `bad_signature` | binding invalid |
-| 403 | `not_eligible` | see policy below |
-| 403 | `stake_invalid` (with `reason`) | the stake is not a deposited DAO cell (`spent`, `not_found`, `not_dao`, `not_deposit`, `too_small`) |
-| 403 | `stake_in_use` | the deposit backs a registration of another peer |
-| 403 | `stake_mismatch` | the peer or service key already has a registry cell, and the request does not name that cell's deposited stake. An operator who changes the deposit after a withdrawal removes the registry cell first (or updates it while the old attestation is still valid) |
-| 413 | `too_large` | body too large |
-| 429 | `rate_limited` | too many requests (`rate_limit_post_per_min`, shared by `/v1/checkin`, `/v1/answer` and `/v1/attest`) |
-| 503 | `chain_unavailable`, `unavailable`, `clock_stale` | config cell clock unreadable / attestations not configured / clock older than `attest_max_clock_age_s` (default 10800 s, min 600) |
+Statuses and error codes are defined once, in `spec/monitor-public-api.md` of the runner repository; this document keeps no table of its own for this route. Reminder of the codes added by the 2026-10 audit fixes: 403 `stake_mismatch` (the peer or service key already has a registry cell and the request does not name that cell's deposited stake; an operator who changes the deposit after a withdrawal removes the registry cell first), 429 `rate_limited` (`rate_limit_post_per_min`) and 503 `clock_stale` (the config cell clock is older than `attest_max_clock_age_s`). The eligibility policy is described under "Registry, config cell and attestations" below.
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
