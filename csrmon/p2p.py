@@ -1,13 +1,15 @@
 """External P2P full-node check: runs a helper command and verifies the block hashes it reports."""
 import ipaddress
 import json
+import os
 import random
 import shlex
 import subprocess
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
+
+from .schedule import _unit, schedule_secret
 
 
 class P2PError(Exception):
@@ -111,22 +113,17 @@ def run_p2p_check(store, chain, checker, runner, *, now, rng) -> dict:
 
 
 class P2PScheduler:
-    def __init__(self, store, chain, checker, config, rng=None, clock=time.time):
+    def __init__(self, store, chain, checker, config, rng=None, clock=time.time, secret=None):
         self.store = store
         self.chain = chain
         self.checker = checker
         self.config = config
         self.rng = rng or random.Random()
         self.clock = clock
-        self._planned = {}
-        self._lock = threading.Lock()
+        self._schedule_key = schedule_secret(secret if secret is not None else os.urandom(32))
 
     def _plan(self, rid, period, start, P):
-        key = (rid, period)
-        with self._lock:
-            if key not in self._planned:
-                self._planned[key] = start + 0.05 * P + self.rng.uniform(0, 0.85 * P)
-            return self._planned[key]
+        return start + 0.05 * P + _unit(self._schedule_key, f"{rid}:{period}") * 0.85 * P
 
     def run_due(self, now=None) -> list:
         if self.checker is None:

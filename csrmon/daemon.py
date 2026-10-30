@@ -43,7 +43,7 @@ class Daemon:
         self.p2p = None
         if c.p2p_check_cmd:
             checker = P2PChecker(c.p2p_check_cmd, c.p2p_check_timeout_s, c.network)
-            self.p2p = P2PScheduler(self.store, self.chain, checker, c)
+            self.p2p = P2PScheduler(self.store, self.chain, checker, c, secret=self.secret)
         self.discovery = Discovery(self.store, c)
         self.cell_writer = self.attester = None
         if c.config_type_args:
@@ -52,7 +52,8 @@ class Daemon:
         self.monitor_pubkey = crypto.pubkey_from_secret(self.secret)
         self.api = Api(self.store, c, self.secret, prober=self.prober, chain=self.chain,
                        attester=self.attester)
-        self.server = ApiServer(self.api, c.listen_host, c.listen_port)
+        self.server = ApiServer(self.api, c.listen_host, c.listen_port, timeout_s=c.http_timeout_s,
+                                 max_connections=c.http_max_connections)
         self.server.start()
         self.writer = (StatCellWriter(self.store, self.chain, c, self.secret)
                        if c.stat_cell_enabled else None)

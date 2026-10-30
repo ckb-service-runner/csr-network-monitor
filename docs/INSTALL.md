@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Linux or WSL2 with systemd, Python ≥ 3.11 (no pip packages needed at runtime).
+- Linux or WSL2 with systemd, Python ≥ 3.11. The only runtime dependency is `coincurve` (libsecp256k1 bindings, signing); `pip install` pulls it in. Without it the monitor refuses to start.
 - A **synced CKB full node** of the same network with JSON-RPC on localhost (`http://127.0.0.1:8114`) and the `Indexer` and `Chain` modules enabled. The monitor refuses non-loopback `node_rpc`.
 - Optional: a second node or provider for the tip cross-check, geolocation CSV files, a P2P helper.
 
@@ -36,6 +36,22 @@ The instance name selects `/etc/csr-network-monitor/monitor-<name>.toml`. Run `@
 ## Hostnames and Caddy
 
 There is **one hostname per network**, because CSR's endpoints carry no network in the path. The testnet monitor is `monitor-testnet.vericell.net` (instance `@testnet`, port 8480); mainnet gets its own host (port 8481). Copy `deploy/Caddyfile.example` to `/etc/caddy/Caddyfile`, set your domain and reload: Caddy proxies the whole host (API, web page, `/v1/checkin`, `/v1/answer`, `/v1/attest`) to the instance. Caddy is a trusted proxy (`trusted_proxies`), the monitor then reads the client IP from `X-Forwarded-For`.
+
+The monitor drops clients that stall (`http_timeout_s`, default 10) and answers `503` beyond `http_max_connections` (default 64) concurrent connections. These are last-resort limits: **also set request timeouts in the reverse proxy** (in Caddy: `servers { timeouts { read_header 10s read_body 20s } }`), because a proxy that buffers requests is what the monitor then talks to.
+
+POST routes (`/v1/checkin`, `/v1/answer`, `/v1/attest`) have their own per-client limit, `rate_limit_post_per_min` (default 20), checked before any signature check or RPC call.
+
+### Docker and `trusted_proxies`
+
+Inside a container the monitor sees the proxy's address, not the client's. `trusted_proxies` (default `127.0.0.1`, `::1`) must list the proxy's address as the container sees it, otherwise `X-Forwarded-For` is ignored and every client shares one rate-limit bucket. Two safe setups: (1) publish the port on the host loopback only (`docker run -p 127.0.0.1:8480:8480 ...`), run the proxy on the host and set `trusted_proxies = ["172.17.0.1"]` (the bridge gateway, which is how the host appears in the container); (2) run the proxy as a container on the same network and list its address. Only list proxies you control, and never publish the port on all interfaces while a proxy is trusted.
+
+## Outgoing requests
+
+Probes, discovery and node RPC go through one helper (`csrmon/netutil.py`): proxy variables (`HTTP_PROXY` ...) are ignored, redirects are refused, answers are size-limited (probes 16 KiB, node RPC 4 MiB) and each request has an overall deadline. Discovery and probing skip private, loopback, link-local, shared (100.64/10), reserved and unique-local addresses unless `allow_insecure_endpoints = true` (for test networks).
+
+## Privacy
+
+The database file is created with mode 0600 (an existing file is tightened at start). The `discovery` table stores a salted hash of the peer IP, not the address. **`runners.endpoint` still holds the runners' endpoint addresses**, because the monitor needs them to probe. Keep the database (and its `-wal`/`-shm` files) private, readable by the service user only, and out of third-party or shared backups; encrypt backups.
 
 CSR nodes in inbound mode must be reachable on their **ping port 8131** (`POST /v1/challenge`); the monitor finds them through the P2P peers of its CKB node (`get_peers`). Nodes behind NAT use outbound mode and check in at the monitor's hostname.
 

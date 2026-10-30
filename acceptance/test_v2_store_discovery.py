@@ -114,10 +114,12 @@ def test_discovery_table(tmp_path):
     st = store_mod.Store(str(tmp_path / "t.db"))
     assert st.discovery_get("1.2.3.4") is None
     st.discovery_mark("1.2.3.4", "QmA", ts=100, ok=False)
-    assert st.discovery_get("1.2.3.4") == {"ip": "1.2.3.4", "node_id": "QmA", "last_try": 100, "last_ok": None}
+    h = st.discovery_get("1.2.3.4")["ip_hash"]
+    assert h != "1.2.3.4"
+    assert st.discovery_get("1.2.3.4") == {"ip_hash": h, "node_id": "QmA", "last_try": 100, "last_ok": None}
     st.discovery_mark("1.2.3.4", "QmA", ts=200, ok=True)
     st.discovery_mark("1.2.3.4", "QmA", ts=300, ok=False)
-    assert st.discovery_get("1.2.3.4") == {"ip": "1.2.3.4", "node_id": "QmA", "last_try": 300, "last_ok": 200}
+    assert st.discovery_get("1.2.3.4") == {"ip_hash": h, "node_id": "QmA", "last_try": 300, "last_ok": 200}
     st.close()
 
 
@@ -161,7 +163,7 @@ class FakeRpcServerV2(FakeRpcServer):
 
 
 def test_discovery_due(tmp_path):
-    c = cfg(tmp_path, "ping_port = 18131\n")
+    c = cfg(tmp_path, "ping_port = 18131\nallow_insecure_endpoints = true\n")
     st = store_mod.Store(c.db_path)
     d = discovery.Discovery(st, c)
     peers = discovery.parse_peers(RAW_PEERS)

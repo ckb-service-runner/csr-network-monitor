@@ -1,7 +1,13 @@
-"""Pure-Python secp256k1: keys, RFC 6979 signatures, recovery."""
-import hashlib
-import hmac
+"""secp256k1: signing through libsecp256k1 (coincurve); pure-Python keys and recovery."""
 import secrets
+
+try:
+    import coincurve
+except ImportError as _e:  # no pure-Python fallback for signing
+    raise ImportError("csr-network-monitor needs the coincurve package "
+                      "(pip install coincurve)") from _e
+
+BACKEND = "libsecp256k1"
 
 P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
@@ -97,42 +103,12 @@ def pubkey_from_secret(secret: bytes) -> bytes:
     return _compress(_affine(_mul(d, G)))
 
 
-def _rfc6979(d, z):
-    x = d.to_bytes(32, "big")
-    h1 = (z % N).to_bytes(32, "big")
-    v = b"\x01" * 32
-    k = b"\x00" * 32
-    k = hmac.new(k, v + b"\x00" + x + h1, hashlib.sha256).digest()
-    v = hmac.new(k, v, hashlib.sha256).digest()
-    k = hmac.new(k, v + b"\x01" + x + h1, hashlib.sha256).digest()
-    v = hmac.new(k, v, hashlib.sha256).digest()
-    while True:
-        v = hmac.new(k, v, hashlib.sha256).digest()
-        t = int.from_bytes(v, "big")
-        if 0 < t < N:
-            yield t
-        k = hmac.new(k, v + b"\x00", hashlib.sha256).digest()
-        v = hmac.new(k, v, hashlib.sha256).digest()
-
-
 def sign(secret: bytes, msg32: bytes) -> bytes:
-    d = _check_secret(secret)
+    """RFC 6979 ECDSA, low s, 65 bytes r || s || recid (libsecp256k1)."""
+    _check_secret(secret)
     if not isinstance(msg32, (bytes, bytearray)) or len(msg32) != 32:
         raise ValueError("message must be 32 bytes")
-    z = int.from_bytes(msg32, "big")
-    for k in _rfc6979(d, z):
-        rx, ry = _affine(_mul(k, G))
-        r = rx % N
-        if r == 0:
-            continue
-        s = pow(k, -1, N) * (z + r * d) % N
-        if s == 0:
-            continue
-        recid = (ry & 1) | (2 if rx >= N else 0)
-        if s > N // 2:
-            s = N - s
-            recid ^= 1
-        return r.to_bytes(32, "big") + s.to_bytes(32, "big") + bytes([recid])
+    return coincurve.PrivateKey(bytes(secret)).sign_recoverable(bytes(msg32), hasher=None)
 
 
 def recover(msg32: bytes, sig65: bytes) -> bytes:

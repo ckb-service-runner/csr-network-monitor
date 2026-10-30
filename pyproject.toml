@@ -9,7 +9,7 @@ description = "Challenges CKB Service Runners, scores and ranks them, publishes 
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = []
+dependencies = ["coincurve>=19"]
 
 [project.scripts]
 csrmon = "csrmon.cli:main"
