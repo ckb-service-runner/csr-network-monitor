@@ -135,3 +135,16 @@ Phase 1 (F-SEC-005/006/007/012/013/014/017, F-MON-015/016).
   - `test_v2_api.py`: `check_type` is `peer_connected`.
   - `test_v2_csrprobe.py`: challenge height window is `tip-100..tip-1` (was `tip-19..tip-3`); the `rejected_400` case uses a node lagging 120 blocks (was 40), because the window is now 100 blocks.
 - **For Patrick:** the runner dashboard shows `check_type`. The runner text for `peer_connected` needs a small runner change (part of `csr-docs`); until then it shows an unknown value.
+## mon-ops-robustness
+- Unknown epoch ids that are not ASCII digits give 404 `not_found`; digit ids that do not exist stay 404 `unknown_epoch`. `/v1/.../history` with `from`/`to` outside 0..now+1 day gives 400 `bad_request` (the older `bad_range` stays for inverted or over-long ranges).
+- `/v1/network` and `/v1/locations` use a generic `_cached` helper (30 s, cleared by `invalidate()`); `nodes_reachable` comes from `Store.reachable_count`.
+- `check-config` writes warnings to stderr and still prints `ok`; with `stat_cell_enabled` and no registry keys it prints a config error and exits 2.
+- The example testnet config now sets `config_type_args` and `csr_registry_code_hash` (A8) uncommented.
+- `TipCrossCheck.status` is `ok`/`diverged`/`unknown`/`off`; `Api` gets it through the new optional `cross` argument. A failing local node still pauses probing.
+- Clock status: meta `clock_ms` is set by `read_clock` and `update_clock` (also when no update was needed); `config_cell_spare_shannons` is kept in meta and shown as `config_cell_spare_ckb`. The 30-day warning is logged whenever the config cell is read.
+- `handle_attest` checks clock freshness only when it signs a new attestation; a cached attestation is still returned.
+- Publishing state per epoch: columns `sent_block`, `published`, `superseded` (added by migration). `Store.get_epoch`/`list_epochs` keep their shape; `Store.epoch_states()` returns the new fields. `stat_cell_tx` keeps meaning "last sent hash" and is cleared when a transaction is to be sent again. If the tip cannot be read after sending, `sent_block` is null and `unknown` then counts as resend.
+- `confirm` treats an RPC error from `get_transaction` as `wait`.
+- `build_epoch` computes `late` as `now - end > 86400`. Existing stored epochs have no `built_at`/`late`.
+- Ranking with each stake status was already covered by `test_stake_scan.py`; no new test.
+- No existing repository test was changed.

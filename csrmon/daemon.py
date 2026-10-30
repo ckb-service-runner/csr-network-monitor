@@ -11,6 +11,7 @@ from .geo import GeoDB, load_or_create_salt
 from .p2p import P2PChecker, P2PScheduler
 from .csrprobe import CsrProber
 from .discovery import Discovery, parse_peers
+from .config import config_warnings
 from .stat_cell import StatCellWriter
 from .store import add_days, day_of
 
@@ -32,6 +33,8 @@ class Daemon:
 
     def _setup(self):
         c = self.config
+        for w in config_warnings(c):
+            log.warning("config: %s", w)
         self.secret = keys.load_or_create_secret(c.key_path)
         self.store = cli.init_db(c)
         salt = load_or_create_salt(c.salt_path)
@@ -51,7 +54,7 @@ class Daemon:
             self.attester = configcell.Attester(self.store, c, self.secret, self.cell_writer)
         self.monitor_pubkey = crypto.pubkey_from_secret(self.secret)
         self.api = Api(self.store, c, self.secret, prober=self.prober, chain=self.chain,
-                       attester=self.attester)
+                       attester=self.attester, cross=self.cross)
         self.server = ApiServer(self.api, c.listen_host, c.listen_port, timeout_s=c.http_timeout_s,
                                  max_connections=c.http_max_connections)
         self.server.start()
@@ -104,9 +107,20 @@ class Daemon:
         epochs.build_pending(self.store, self.chain, self.secret, self.config, now=int(now))
         if self.writer is None:
             return
-        for e in self.store.list_epochs():
-            if not e.get("stat_cell_tx"):
-                self.writer.publish(e["epoch"])
+        eps = self.store.epoch_states()
+        for e in eps:
+            if e.get("stat_cell_tx") and not e.get("published"):
+                self.writer.confirm(e["epoch"])
+        eps = self.store.epoch_states()
+        if any(e["stat_cell_tx"] and not e["published"] for e in eps):
+            return          # a transaction is in flight: each update replaces the data
+        todo = [e for e in eps if not e["published"] and not e["superseded"]]
+        if not todo:
+            return
+        newest = todo[-1]
+        for e in todo[:-1]:
+            self.store.set_epoch_superseded(e["epoch"])
+        self.writer.publish(newest["epoch"])
 
     def _p2p_loop(self):
         while not self._stop.wait(5):

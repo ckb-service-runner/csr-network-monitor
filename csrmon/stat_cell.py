@@ -10,6 +10,22 @@ CKB = 10**8
 MIN_CHANGE = 61 * CKB
 
 
+RESEND_AFTER_BLOCKS = 100
+
+
+def next_action(status, *, sent_block, tip) -> str:
+    """What to do with a sent stat cell transaction: published, wait or resend."""
+    if status == "committed":
+        return "published"
+    if status in ("pending", "proposed"):
+        return "wait"
+    if status == "rejected":
+        return "resend"
+    if sent_block is None or tip >= sent_block + RESEND_AFTER_BLOCKS:
+        return "resend"
+    return "wait"
+
+
 class InsufficientFunds(Exception):
     pass
 
@@ -83,6 +99,10 @@ class StatCellWriter:
             raise ValueError(f"unknown epoch {epoch}")
         if ep["stat_cell_tx"]:
             return ep["stat_cell_tx"]
+        return self._send(ep)
+
+    def _send(self, ep):
+        epoch = ep["epoch"]
         data_hex = ep["data_hex"]
         data = from_hex(data_hex)
         existing = self.find_stat_cell()
@@ -95,8 +115,32 @@ class StatCellWriter:
             t = tx["outputs"][0]["type"]
             self.store.set_meta("stat_cell_type_args", t["args"])
             self.store.set_meta("stat_cell_type_hash", script_hash(t))
-        self.store.set_epoch_tx(epoch, h)
+        try:
+            sent_block = self.chain.tip()[0]
+        except Exception:
+            sent_block = None
+        self.store.set_epoch_tx(epoch, h, sent_block)
         return h
+
+    def confirm(self, epoch):
+        """Check a sent epoch transaction; returns "published", "wait", "resend" or "idle"."""
+        ep = self.store.get_epoch(epoch)
+        st = next((x for x in self.store.epoch_states() if x["epoch"] == epoch), None)
+        if st is None or not st["stat_cell_tx"]:
+            return "idle"
+        if st["published"]:
+            return "published"
+        ep = {**ep, **st}
+        try:
+            status = self.chain.get_transaction(ep["stat_cell_tx"])["status"]
+        except Exception:
+            return "wait"
+        action = next_action(status, sent_block=ep["sent_block"], tip=self.chain.tip()[0])
+        if action == "published":
+            self.store.set_epoch_published(epoch)
+        elif action == "resend":
+            self.store.clear_epoch_tx(epoch)
+        return action
 
     def _update_tx(self, cell, data_hex, data):
         c = self.config

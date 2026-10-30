@@ -69,9 +69,9 @@ Take the values from CSR's `deployments/testnet.json` and set them in the monito
 - `csr_registry_code_hash` – data2 hash of the `csr-registry` contract
 - `stat_cell_sighash_dep_tx` – dep group tx of the secp256k1 sighash lock (needed to sign the clock updates)
 
-Testnet values: `config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"`, `csr_registry_code_hash = "0x47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"`, `stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"`.
+Testnet values: `config_type_args = "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e"`, `csr_registry_code_hash = "0x411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8"`, `stat_cell_sighash_dep_tx = "0xf8de3bb47d055cdf460d93a2a6e1b05f7432f9777c8c474abf4eec1d4aee5d37"`.
 
-**Fund the config cell**: it must hold enough capacity for the cell itself plus the fee of every clock update (`clock_update_fee_shannons`, taken from its capacity, every `clock_update_interval_s`). Also fund the monitor address (`keygen` prints the `blake160`) if you use the stat cell. The monitor then keeps `clock_ms` current, scans registry cells and issues attestations.
+**Fund the config cell** (see "Refilling the config cell" below): it must hold enough capacity for the cell itself plus the fee of every clock update (`clock_update_fee_shannons`, taken from its capacity, every `clock_update_interval_s`). Also fund the monitor address (`keygen` prints the `blake160`) if you use the stat cell. The monitor then keeps `clock_ms` current, scans registry cells and issues attestations.
 
 ## Geolocation
 
@@ -92,6 +92,12 @@ The data is licensed **CC BY 4.0**; the public page shows the required credit to
 ## Tip cross-check
 
 Every `crosscheck_interval_s` the monitor compares its node tip with `second_tip_source` (an independent node RPC). If the local node is unreachable or differs by more than `sync_threshold`, probing is paused; paused slots are `excluded`, never misses.
+
+The cross-check needs a second source: without `second_tip_source` there is nothing to compare with (`check-config` and the start-up log warn about it, and `GET /v1/monitor` shows `crosscheck: "off"`). If the second source is unreachable the result is `"unknown"`: probing continues, and the failure is logged once per streak.
+
+## Refilling the config cell
+
+Every clock update takes `clock_update_fee_shannons` from the config cell. `GET /v1/monitor` shows `config_cell_spare_ckb` (capacity above the occupied capacity), `clock_ms` and `clock_age_s`; the monitor logs a warning when the spare capacity covers fewer than 30 days of updates. When the cell cannot pay the fee any more the clock stops, and `POST /v1/attest` answers `503 clock_stale` once the clock is older than `attest_max_clock_age_s` (default 10800 s, minimum 600). To refill, send CKB to the config cell's lock with a transaction that spends the cell and returns it with a higher capacity (same lock, type and data), signed by the monitor key; the next clock update resumes the clock.
 
 ## Stat cell
 

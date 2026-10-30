@@ -1,6 +1,7 @@
 """Public REST API and HTTP server."""
 import base64
 import json
+import logging
 import math
 import os
 import statistics
@@ -14,6 +15,7 @@ from . import configcell, geo, scoring
 from . import __version__
 from .store import add_days, day_of, day_start
 
+log = logging.getLogger("csrmon")
 MAX_BODY = 16384
 CACHE_TTL_S = 30
 _RANK_KEYS = ("runner_id", "rank", "score", "provisional", "status", "flags", "a7", "a30",
@@ -49,10 +51,10 @@ def _median(vals):
 
 class Api:
     def __init__(self, store, config, monitor_secret, *, prober=None, chain=None, attester=None,
-                 clock=time.time, version=__version__):
+                 clock=time.time, version=__version__, cross=None):
         from .crypto import pubkey_from_secret
         self.store, self.config, self.prober, self.chain = store, config, prober, chain
-        self.attester = attester
+        self.attester, self.cross = attester, cross
         self.clock, self.version = clock, version
         self.pubkey = "0x" + pubkey_from_secret(monitor_secret).hex()
         self._lock = threading.Lock()
@@ -131,6 +133,9 @@ class Api:
             return self._out(200, obj, {})
         except _Reply as r:
             return self._out(r.status, r.obj, r.headers)
+        except Exception:
+            log.exception("unhandled error for %s %s", method, path)
+            return self._out(500, {"error": "internal"}, {})
 
     @staticmethod
     def _static(path):
@@ -217,7 +222,21 @@ class Api:
                 tip = {"number": n, "hash": h}
             except Exception:
                 tip = None
-        return {"pubkey": self.pubkey, "version": self.version,
+        now = self.clock()
+
+        def meta_int(key):
+            try:
+                return int(float(self.store.get_meta(key)))
+            except (TypeError, ValueError):
+                return None
+        clock_ms = meta_int("clock_ms")
+        spare = meta_int("config_cell_spare_shannons")
+        return {"registry_last_scan_at": meta_int("registry_last_scan_at"),
+                "clock_ms": clock_ms,
+                "clock_age_s": None if clock_ms is None else int(now - clock_ms / 1000),
+                "config_cell_spare_ckb": None if spare is None else spare // 10**8,
+                "crosscheck": self.cross.status if self.cross is not None else "off",
+                "pubkey": self.pubkey, "version": self.version,
                 "score_formula": scoring.SCORE_FORMULA, "network": self.config.network,
                 "public_url": self.config.public_url, "tip": tip,
                 "paused": bool(getattr(self.prober, "paused", False)),
@@ -293,6 +312,9 @@ class Api:
             frm = int(query["from"][0]) if "from" in query else to - 7 * 86400
         except ValueError:
             raise _err(400, "bad_range") from None
+        limit = int(self.clock()) + 86400
+        if not (0 <= frm <= limit and 0 <= to <= limit):
+            raise _err(400, "bad_request")
         if to < frm or to - frm > 400 * 86400:
             raise _err(400, "bad_range")
         items = []
@@ -321,9 +343,9 @@ class Api:
         return {k: e[k] for k in ("epoch", "start", "end", "merkle_root", "stat_cell_tx")}
 
     def _epoch(self, n):
-        e = self.store.get_epoch(int(n)) if n.isdigit() else None
+        e = self.store.get_epoch(int(n)) if n.isascii() and n.isdigit() else None
         if e is None:
-            raise _err(404, "unknown_epoch")
+            raise _err(404, "not_found" if not (n.isascii() and n.isdigit()) else "unknown_epoch")
         return {**e["summary"], **self._epoch_row(e)}
 
     def _post_csr(self, name, body, ip):
@@ -341,15 +363,29 @@ class Api:
         status, out = getattr(target, fn)(obj, ip, self.clock())
         return self._raise_or(status, out)
 
+    def _cached(self, name, build):
+        now = self.clock()
+        with self._lock:
+            hit = self._cache.get(name)
+            if hit and 0 <= now - hit[0] < CACHE_TTL_S:
+                return hit[1]
+        value = build()
+        with self._lock:
+            self._cache[name] = (now, value)
+        return value
+
     def _network(self):
+        return self._cached("network", self._build_network)
+
+    def _locations(self):
+        return self._cached("locations", self._build_locations)
+
+    def _build_network(self):
         now = self.clock()
         runners = self.store.list_runners()
-        since = now - self.config.reachable_window_s
-        reachable = 0
+        reachable = self.store.reachable_count(now - self.config.reachable_window_s)
         counts = {}
         for r in runners:
-            if any(p["result"] == "ok" for p in self.store.probes(r["runner_id"], since=since)):
-                reachable += 1
             c = r["country"]
             if c and c != "??":
                 counts[c] = counts.get(c, 0) + 1
@@ -358,7 +394,7 @@ class Api:
         return {"nodes_total": len(runners), "nodes_reachable": reachable,
                 "countries": countries, "updated_at": int(now)}
 
-    def _locations(self):
+    def _build_locations(self):
         runners = self.store.list_runners()
         cells = {}
         located = 0

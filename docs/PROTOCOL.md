@@ -81,11 +81,11 @@ Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = o
 | 403 | `stake_mismatch` | the peer or service key already has a registry cell, and the request does not name that cell's deposited stake. An operator who changes the deposit after a withdrawal removes the registry cell first (or updates it while the old attestation is still valid) |
 | 413 | `too_large` | body too large |
 | 429 | `rate_limited` | too many requests (`rate_limit_post_per_min`, shared by `/v1/checkin`, `/v1/answer` and `/v1/attest`) |
-| 503 | `chain_unavailable`, `unavailable` | config cell clock unreadable / attestations not configured |
+| 503 | `chain_unavailable`, `unavailable`, `clock_stale` | config cell clock unreadable / attestations not configured / clock older than `attest_max_clock_age_s` (default 10800 s, min 600) |
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
-Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`peer_connected` / `challenge_only`); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`peer_connected` / `challenge_only`); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`, plus `registry_last_scan_at` (unix seconds or null), `clock_ms`, `clock_age_s`, `config_cell_spare_ckb` (or null) and `crosscheck` (`ok`, `diverged`, `unknown`, `off`). Unexpected errors answer `500 {"error":"internal"}`; `/v1/network` and `/v1/locations` are cached for 30 s.
 
 ### `GET /v1/locations`
 
@@ -140,6 +140,8 @@ In registry mode (`csr_registry_code_hash` and `config_type_args` both set) only
 `score_v1` is **frozen**. Score = 100 × (0.45·A30 + 0.15·A365 + 0.15·S30 + 0.15·F30 + 0.10·T), with weights A30 0.45, A365 0.15, S30 0.15, F30 0.15, T 0.10 (sum 1). A30/A365 are the availability over 30/365 days, S30 the share of ok probes in sync, F30 the share of passed P2P checks, T the age (capped at 365 days). The peer-count term P (5 %) was dropped; its weight went to A30 (decisions D11 B, D18 A). Any change to the formula needs `score_v2` and a new formula byte in the epoch (byte 29). A runner with the flag `identity_mismatch` or `bad_binding` scores 0.
 
 ## Epoch data and leaves
+
+The epoch summary (`GET /v1/{network}/epochs/{n}`) carries `built_at` (unix seconds) and `late` (true when built more than 1 day after the epoch's end). An epoch counts as published only after its stat cell transaction is committed; the monitor publishes one epoch per pass (the newest unpublished one, older ones are skipped because each update replaces the data) and sends a dropped transaction again.
 
 Every Monday 00:00 UTC (epoch boundaries) the monitor builds a Merkle tree over all ranked runners, sorted by runner_id.
 

@@ -8,6 +8,9 @@ class ConfigError(Exception):
     pass
 
 
+A7_REGISTRY_HASH = "0x47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"
+
+
 @dataclass
 class Config:
     network: str
@@ -71,6 +74,7 @@ class Config:
     attest_validity_days: int = 7
     attest_min_ok_24h: int = 1
     attest_cache_s: int = 3600
+    attest_max_clock_age_s: int = 10800
 
 
 _REQUIRED = {"network", "public_url", "db_path", "key_path"}
@@ -86,7 +90,7 @@ _MIN = {
     "ping_port": 1, "discovery_interval_s": 1, "discovery_backoff_s": 1,
     "answer_deadline_s": 1, "reachable_window_s": 1, "clock_update_interval_s": 1,
     "attest_validity_days": 1, "attest_min_ok_24h": 1, "attest_cache_s": 1,
-    "min_stake_ckb": 1,
+    "min_stake_ckb": 1, "attest_max_clock_age_s": 600,
 }
 _HASH_TYPES = ("type", "data", "data1", "data2")
 
@@ -183,3 +187,18 @@ def load_config(path) -> Config:
     if not cfg.salt_path:
         cfg.salt_path = cfg.db_path + ".salt"
     return cfg
+
+
+def config_warnings(config) -> list:
+    """Sentences about settings that silently disable or weaken a duty of the monitor."""
+    out = []
+    if not config.csr_registry_code_hash or not config.config_type_args:
+        out.append("no registry scan: csr_registry_code_hash and config_type_args must both be"
+                   " set, otherwise registrations, stakes and attestations are not available.")
+    if config.csr_registry_code_hash.lower() == A7_REGISTRY_HASH:
+        out.append("csr_registry_code_hash is the old A7 registry; the current A8 registry hash"
+                   " is in the runner repository (deployments/testnet.json).")
+    if not config.second_tip_source:
+        out.append("second_tip_source is empty: the tip cross-check has no independent source"
+                   " and cannot detect a local node that is stuck on a wrong chain.")
+    return out
