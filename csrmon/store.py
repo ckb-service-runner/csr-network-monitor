@@ -321,6 +321,12 @@ class Store:
                     r[k] = bool(r[k])
         return r
 
+    def peer_connected_since(self, runner_id, since) -> bool:
+        """Any ok probe since `since` whose peer was connected to the monitor's node.
+        (The value is stored in the `p2p_verified` column; the column keeps its v1/v2 name.)"""
+        return self._one("select 1 from probes where runner_id=? and ts>=? and result='ok'"
+                         " and p2p_verified=1 limit 1", (runner_id, since)) is not None
+
     def probes(self, runner_id, since=None, until=None):
         sql, args = "select * from probes where runner_id=?", [runner_id]
         if since is not None:

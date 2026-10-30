@@ -128,7 +128,7 @@ def test_nodes_endpoint(env):
     assert a["peer_id"] == "QmA" and a["rank"] == 1 and a["of"] == 2
     assert a["availability"] == {"d7": round(139 / 144, 4), "d30": round(139 / 144, 4),
                                  "d365": round(139 / 144, 4)}
-    assert a["check_type"] == "p2p_verified"
+    assert a["check_type"] == "peer_connected"
     assert a["attestation"] == {"status": "none", "expiry": None}
     assert a["stake"] == {"status": "none", "capacity_ckb": None, "outpoint": None}
     assert a["last_check_at"] == NOW - 600

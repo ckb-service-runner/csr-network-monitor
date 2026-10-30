@@ -4,7 +4,7 @@ import signal
 import threading
 import time
 
-from . import cli, configcell, crypto, epochs, keys, registry, scoring
+from . import cli, configcell, crypto, epochs, keys, scoring
 from .api import Api, ApiServer
 from .chain import RpcChain, TipCrossCheck
 from .geo import GeoDB, load_or_create_salt
@@ -60,12 +60,6 @@ class Daemon:
         log.info("listening on %s:%s (%s)", c.listen_host, self.server.port, c.network)
 
     # ---- tasks ----
-    def _sync(self, now):
-        r = registry.sync_registrations(self.store, self.chain, self.config, now)
-        if r["added"] or r["removed"] or r["updated"]:
-            log.info("registrations: +%d ~%d -%d", len(r["added"]), len(r["updated"]),
-                     len(r["removed"]))
-
     def _scan_registry(self, now):
         r = configcell.scan_registry(self.store, self.chain, self.config, self.monitor_pubkey)
         if r:
@@ -132,7 +126,6 @@ class Daemon:
         self._setup()
         c = self.config
         tasks = [  # name, period, function; next run time starts at 0 = immediately
-            ["sync", c.probe_interval_s, self._sync],
             ["crosscheck", c.crosscheck_interval_s, self._crosscheck],
             ["aggregate", c.aggregate_interval_s, self._aggregate],
             ["prune", DAY, self._prune],

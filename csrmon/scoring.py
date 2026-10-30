@@ -4,7 +4,9 @@ import statistics
 from .store import add_days, day_of, day_start
 
 SCORE_FORMULA = "score_v1"
-WEIGHTS = {"a30": 0.40, "a365": 0.15, "s30": 0.15, "f30": 0.15, "t": 0.10, "p": 0.05}
+# score_v1 is frozen: any change to the weights or the terms needs score_v2 and a new formula
+# byte in the epoch. The peer-count term P was dropped (D11 B, D18 A); its 5 % went to A30.
+WEIGHTS = {"a30": 0.45, "a365": 0.15, "s30": 0.15, "f30": 0.15, "t": 0.10}
 _BAD_FLAGS = ("identity_mismatch", "bad_binding")
 
 
@@ -33,10 +35,8 @@ def runner_metrics(store, runner_id, today, provisional_days=7, runner=None) -> 
     f30 = _ratio(sum(r["p2p_ok"] for r in r30), sum(r["p2p_total"] for r in r30))
     age_days = max(0, _days_between(day_of(runner["first_seen"]), today))
     t = min(1.0, age_days / 365)
-    peers = [r["median_peers"] for r in r30 if r["median_peers"] is not None]
-    p = min(1.0, statistics.median(peers) / 8) if peers else 0.0
     lags = [r["median_lag"] for r in r30 if r["median_lag"] is not None]
-    m = {"a7": a7, "a30": a30, "a365": a365, "s30": s30, "f30": f30, "t": t, "p": p,
+    m = {"a7": a7, "a30": a30, "a365": a365, "s30": s30, "f30": f30, "t": t,
          "median_lag_30": statistics.median(lags) if lags else None,
          "age_days": age_days, "provisional": age_days < provisional_days}
     if any(f in runner["flags"] for f in _BAD_FLAGS):

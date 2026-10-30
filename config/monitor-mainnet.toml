@@ -22,10 +22,6 @@ crosscheck_interval_s = 600
 aggregate_interval_s = 600
 
 # --- registration discovery ---
-# Type script of the registration cells (set once the on-chain script is decided).
-registration_code_hash = ""
-registration_hash_type = "type"
-registration_args = "0x"
 allow_insecure_endpoints = false   # true only for tests (allows http:// and loopback endpoints)
 
 # --- CSR alignment (v2) ---

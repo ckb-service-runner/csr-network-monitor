@@ -21,8 +21,11 @@ _STATUS_REASONS = {400: "rejected_400", 403: "bad_monitor_key", 409: "replay",
                    429: "rate_limited", 503: "node_unavailable"}
 
 MAX_OPEN_CHALLENGES = 10000
+# A tip hash that differs from the monitor's within this many blocks of the monitor's tip is a
+# recent fork (the two nodes briefly follow different tips), not a miss.
+FORK_TOLERANCE_BLOCKS = 3
 
-__all__ = ["slot_of", "evaluate_answer", "CsrProber"]
+__all__ = ["slot_of", "evaluate_answer", "CsrProber", "FORK_TOLERANCE_BLOCKS"]
 
 
 def _fail(reason) -> dict:
@@ -54,7 +57,16 @@ def evaluate_answer(challenge, body, *, chain, network, elapsed_s, deadline_s, s
         return _fail("wrong_block_hash")
     if a["tip_number"] < challenge["height"]:
         return _fail("tip_below_height")
-    lag = max(0, chain.tip()[0] - a["tip_number"])
+    mtip = chain.tip()[0]
+    tip = a["tip_number"]
+    if tip > mtip + sync_threshold:
+        return _fail("unknown_tip")
+    if tip <= mtip:
+        h = chain.block_hash(tip)
+        if (h is None or a["tip_hash"].lower() != str(h).lower()) \
+                and tip < mtip - FORK_TOLERANCE_BLOCKS:
+            return _fail("unknown_tip")
+    lag = max(0, mtip - tip)   # a tip above the monitor's tip is ahead of us: lag 0, hash unchecked
     return {"result": "ok", "failure_reason": None, "peer_id": a["peer_id"],
             "service_pubkey": a["service_pubkey"], "tip_number": a["tip_number"], "lag": lag,
             "in_sync": lag <= sync_threshold and a["r2_state"] == "Synced",
@@ -88,7 +100,7 @@ class CsrProber:
         with self._lock:
             self._peers = list(peers)
 
-    def p2p_verified(self, peer_id) -> bool:
+    def peer_connected(self, peer_id) -> bool:
         with self._lock:
             return any(p["node_id"] == peer_id for p in self._peers)
 
@@ -99,7 +111,7 @@ class CsrProber:
     def _new_challenge(self, now):
         tip = self.chain.tip()[0]
         with self._lock:
-            back = self.rng.randrange(3, 20)
+            back = self.rng.randrange(1, 101)
             nonce = bytes(self.rng.getrandbits(8) for _ in range(32))
         return ping.make_challenge(self.secret, height=max(0, tip - back),
                                    issued_at=int(now), nonce=nonce)
@@ -123,7 +135,7 @@ class CsrProber:
             return None
 
     def _record(self, runner_id, now, mode, result, reason, *, slot=None, ip=None,
-                latency_ms=None, ev=None, p2p_verified=None):
+                latency_ms=None, ev=None, peer_connected=None):
         ev = ev or {}
         rec = {"runner_id": runner_id, "ts": int(now),
                "slot": slot_of(now, self.config.probe_interval_s) if slot is None else slot,
@@ -132,7 +144,7 @@ class CsrProber:
                "lag": ev.get("lag"), "in_sync": ev.get("in_sync"),
                "csr_version": ev.get("csr_version"), "ckb_version": ev.get("node_version"),
                "ip_hash": None, "country": None, "asn": None,
-               "p2p_verified": p2p_verified if result == "ok" else None}
+               "p2p_verified": peer_connected if result == "ok" else None}   # column name kept
         loc = None
         if ip:
             rec["ip_hash"] = geo_mod.ip_hash(ip, self.salt)
@@ -144,6 +156,13 @@ class CsrProber:
                     loc = locate(ip)
         lat, lon = loc if loc else (None, None)
         self.store.record_probe(**rec, loc_lat=lat, loc_lon=lon)
+        # bad_binding is set by a probe that fails with it and cleared by the next good probe
+        if result == "fail" and reason == "bad_binding":
+            self.store.set_flag(runner_id, "bad_binding", True)
+        elif result == "ok":
+            r = self.store.get_runner(runner_id)
+            if r is not None and "bad_binding" in r["flags"]:
+                self.store.set_flag(runner_id, "bad_binding", False)
         return rec
 
     def _upsert_runner(self, ev, mode, endpoint, now, keep_mode=False):
@@ -215,7 +234,7 @@ class CsrProber:
                 res["runner_id"] = rid
                 self._record(rid, now, "inbound", "ok", None, ip=c.get("ip"),
                              latency_ms=ev["latency_ms"], ev=ev,
-                             p2p_verified=ev["peer_id"] == c["node_id"])
+                             peer_connected=ev["peer_id"] == c["node_id"])
             self.store.discovery_mark(c["ip"], c["node_id"], ts=now, ok=ok)
             return res
 
@@ -235,7 +254,7 @@ class CsrProber:
             self._upsert_runner(ev, "inbound", runner["endpoint"], now, keep_mode=True)
         return self._record(rid, now, "inbound", ev["result"], ev["failure_reason"], ip=ip,
                             latency_ms=ev["latency_ms"], ev=ev,
-                            p2p_verified=self.p2p_verified(runner["peer_id"]))
+                            peer_connected=self.peer_connected(runner["peer_id"]))
 
     # ---- scheduling ----
     def _expire_open(self, now):
@@ -372,7 +391,7 @@ class CsrProber:
         if ev["result"] == "ok":
             rid = self._upsert_runner(ev, "outbound", "", now, keep_mode=True)
             self._record(rid, now, "outbound", "ok", None, slot=e["slot"], ip=e["ip"],
-                         latency_ms=latency, ev=ev, p2p_verified=self.p2p_verified(ev["peer_id"]))
+                         latency_ms=latency, ev=ev, peer_connected=self.peer_connected(ev["peer_id"]))
             return 200, {"result": "ok"}
         if self.store.get_runner(rid) is not None:
             self._record(rid, now, "outbound", "fail", ev["failure_reason"], slot=e["slot"],

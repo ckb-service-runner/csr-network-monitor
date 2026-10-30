@@ -269,7 +269,7 @@ class Api:
             "runner_id": rid, "rank": item["rank"], "score": item["score"],
             "provisional": item["provisional"], "status": r["status"], "flags": item["flags"],
             "metrics": {k: item[k] for k in
-                        ("a7", "a30", "a365", "s30", "f30", "t", "p", "median_lag_30")},
+                        ("a7", "a30", "a365", "s30", "f30", "t", "median_lag_30")},
             "first_seen": int(r["first_seen"]), "first_seen_day": day_of(r["first_seen"]),
             "last_seen": r["last_seen"],
             "registration": {"service_pubkey": r["service_pubkey"], "peer_id": r["peer_id"],
@@ -385,10 +385,9 @@ class Api:
         if r is None:
             check_type, last_at = "none", 0
         else:
-            probes = self.store.probes(r["runner_id"], since=now - 86400)
-            p2p = any(p["result"] == "ok" and p["p2p_verified"] for p in probes)
+            connected = self.store.peer_connected_since(r["runner_id"], now - 86400)
             lp = self.store.last_probe(r["runner_id"])
-            check_type = "p2p_verified" if p2p else "challenge_only"
+            check_type = "peer_connected" if connected else "challenge_only"
             last_at = int(lp["ts"]) if lp else 0
         reg = self.store.registration_for(peer_id)
         if reg is None:

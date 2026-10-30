@@ -33,6 +33,19 @@ Inbound mode. The monitor sends `{"nonce","height","issued_at","monitor_sig"}` (
 
 The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync.
 
+**Tip challenge.** The challenge `height` is drawn from the last 100 blocks: `tip − randrange(1, 101)` (clamped at 0), `tip` being the monitor's tip. After the signature, binding, peer and `block_hash_at_height` checks, the monitor checks the answer's tip, with `mtip` the monitor's tip:
+
+1. `tip_number < height` fails with `tip_below_height`.
+2. `tip_number > mtip + sync_threshold` fails with `unknown_tip` (a tip the monitor's node does not know).
+3. `mtip < tip_number <= mtip + sync_threshold` is ok with lag 0 (the monitor cannot check the hash yet).
+4. Otherwise `tip_hash` must equal the monitor's block hash at `tip_number`. A mismatch fails with `unknown_tip`, unless `tip_number >= mtip − FORK_TOLERANCE_BLOCKS` (3): a different tip within 3 blocks of the monitor's tip is a recent fork, not a miss, and the probe is ok.
+
+`lag = max(0, mtip − tip_number)`.
+
+**Answer deadline.** Pull (inbound) probes must be answered within `probe_timeout_s` (default 5 s). Push (outbound) runners get `answer_deadline_s` (default 60 s) between the check-in reply and the answer (decision D8 B). The reason: push runners are typically behind home connections and the answer needs a full round trip (check-in, challenge, node work, answer) that a 5 s limit would often miss; a pull probe is a single request to a reachable endpoint. The deadline is not shortened: an answer after it fails with `late`, no answer at all with `no_answer`.
+
+**`bad_binding` flag.** A probe that fails with `bad_binding` sets the runner's `bad_binding` flag (score 0, excluded from the ranking, bit 4 of the epoch leaf flags). The next good probe clears it.
+
 ### `POST /v1/checkin` and `POST /v1/answer` (on the monitor, outbound mode)
 
 For nodes behind NAT. Check-in body: `{"peer_id","service_pubkey","binding_sig","network","csr_version"}`.
@@ -72,7 +85,7 @@ Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = o
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
-Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `challenge_only`); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`peer_connected` / `challenge_only`); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`.
 
 ### `GET /v1/locations`
 
@@ -93,7 +106,7 @@ Only snapped 2° cells are published: no exact coordinates, cities or region nam
 
 - **Inbound nodes** publish no address on chain. Every `discovery_interval_s` the monitor reads `get_peers` of its own CKB node (`node_id` and multiaddrs) and sends `POST http://<peer ip>:8131/v1/challenge` to peers that are not yet runners, with a back-off (`discovery_backoff_s`) for peers that did not answer. A correct answer creates a runner (mode `inbound`), challenged once per slot afterwards.
 - **Outbound nodes** check in; a correct answer creates the runner (mode `outbound`).
-- **`p2p_verified` vs `challenge_only`**: a probe is `p2p_verified` when the answering `peer_id` is a node ID the monitor's CKB node is connected to (for discovery: the peer that was probed). A node is reported as `p2p_verified` if any successful probe of the last 24 h was P2P-verified, else `challenge_only`.
+- **`peer_connected` vs `challenge_only`** (`check_type`): a probe is `peer_connected` when the answering `peer_id` is a node ID the monitor's CKB node is connected to (for discovery: the peer that was probed). It only means "a peer of the monitor's node"; it does not prove that the node is a P2P full node. A node is reported as `peer_connected` if any successful probe of the last 24 h had a connected peer, else `challenge_only`. This value was called `p2p_verified` before; that name is kept free for the real P2P full-node check. (The probe column in the database is still named `p2p_verified`.)
 
 ## Slots and the grace rule
 
@@ -121,6 +134,10 @@ slot = `int(ts // probe_interval_s)`. At most one outcome is recorded per runner
 ## Ranking and stake
 
 In registry mode (`csr_registry_code_hash` and `config_type_args` both set) only runners whose registry cell has stake status `deposited` and whose service key matches the cell are ranked. All other runners are listed by `GET /v1/{network}/runners` with `rank: null` and their `stake_status` (`deposited`, `withdrawn`, `invalid`, `duplicate` or `none`), are not counted in `runner_count` or `asn_peers`, and are left out of the epoch leaves. Leaving the monitor ("Join off") means having no registry cell: the stake status becomes `none` and the rank disappears. Without registry mode ranking is unchanged.
+
+## Score
+
+`score_v1` is **frozen**. Score = 100 × (0.45·A30 + 0.15·A365 + 0.15·S30 + 0.15·F30 + 0.10·T), with weights A30 0.45, A365 0.15, S30 0.15, F30 0.15, T 0.10 (sum 1). A30/A365 are the availability over 30/365 days, S30 the share of ok probes in sync, F30 the share of passed P2P checks, T the age (capped at 365 days). The peer-count term P (5 %) was dropped; its weight went to A30 (decisions D11 B, D18 A). Any change to the formula needs `score_v2` and a new formula byte in the epoch (byte 29). A runner with the flag `identity_mismatch` or `bad_binding` scores 0.
 
 ## Epoch data and leaves
 
