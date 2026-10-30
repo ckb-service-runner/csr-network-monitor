@@ -135,7 +135,7 @@ Runners connect their CKB node to the monitor's node; once a day the monitor rea
 
 Every `crosscheck_interval_s` the monitor compares its node tip with `second_tip_source` (an independent node RPC). If the local node is unreachable or differs by more than `sync_threshold`, probing is paused; paused slots are `excluded`, never misses.
 
-The cross-check needs a second source: without `second_tip_source` there is nothing to compare with (`check-config` and the start-up log warn about it, and `GET /v1/monitor` shows `crosscheck: "off"`). If the second source is unreachable the result is `"unknown"`: probing continues, and the failure is logged once per streak.
+The cross-check needs a second source: without `second_tip_source` there is nothing to compare with (`check-config` and the start-up log warn about it, and `GET /v1/monitor` shows `crosscheck: "off"`). Public RPC endpoints work (for example `https://testnet.ckb.dev/rpc`); the monitor identifies itself with the user agent `csr-network-monitor/<version>`, because some of them refuse Python's default one. If the second source is unreachable the result is `"unknown"`: probing continues, and the failure is logged once per streak.
 
 ## Refilling the config cell
 

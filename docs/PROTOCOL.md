@@ -142,6 +142,8 @@ The monitor publishes its own node's P2P address as `p2p_address` in `GET /v1/mo
 - `wrong_chain` – `best_known_header_hash` differs from the monitor's block hash at that height, or the number is more than `sync_threshold` above the tip;
 - `ok` – otherwise (a peer up to `sync_threshold` ahead of the monitor is fine; its hash cannot be compared yet).
 
+A runner whose `peer_id` is the monitor's own node (`local_node_info`) never appears in that node's `get_peers`; it is judged `ok` when it proved that node's P2P key within the proof lifetime (7 days, `POST /v1/identity`), and like any other runner otherwise.
+
 `ok` is recorded as `ok`, everything else as `fail` with the verdict as `reason`. If the node cannot be read, every due runner of that run is recorded as `error` and is not retried before the next period. Nothing runs while probing is paused (tip cross-check). The results feed F30 (`p2p_ok / p2p_total` of the last 30 days). The P2P handshake itself proves that the peer holds the private key behind its peer ID, so a connected peer with that ID is that node.
 
 **Limitation:** the check proves that the runner's node follows the chain's headers and holds the peer key. It does not download full blocks, so it does not prove that the node stores or serves block bodies.

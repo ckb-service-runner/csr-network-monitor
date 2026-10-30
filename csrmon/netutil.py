@@ -6,6 +6,11 @@ import time
 import urllib.error
 import urllib.request
 
+from . import __version__
+
+# Some public RPC endpoints refuse Python's default user agent (HTTP 403).
+USER_AGENT = f"csr-network-monitor/{__version__} (+https://github.com/ckb-service-runner/csr-network-monitor)"
+
 
 class FetchError(Exception):
     def __init__(self, message="", *, timed_out=False):
@@ -45,6 +50,7 @@ def fetch_status(url, data=None, *, timeout=5, max_bytes=4096, headers=None):
     """Return (status, body); a redirect is not followed and comes back as (3xx, b"")."""
     deadline = time.monotonic() + timeout
     hdrs = dict(headers or {})
+    hdrs.setdefault("User-Agent", USER_AGENT)
     if data is not None:
         hdrs.setdefault("Content-Type", "application/json")
     try:

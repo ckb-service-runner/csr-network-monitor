@@ -165,3 +165,29 @@ def test_helper_command_is_gone():
     assert "p2p_check_cmd" not in fields
     proto = open(os.path.join(ROOT, "docs", "PROTOCOL.md")).read()
     assert "/v1/identity" in proto and "CSR-NODE-IDENTITY-v1" in proto and "p2p_address" in proto
+
+
+# Integration (Oct 2026): a runner on the monitor's own node never shows in its get_peers.
+class _OwnNode(FakeChainV2):
+    def __init__(self, own, **kw):
+        super().__init__(**kw)
+        self.own = own
+
+    def local_node_id(self):
+        return self.own
+
+
+def test_runner_on_the_monitors_own_node_counts_when_proven(tmp_path):
+    env = make(tmp_path, p2p_interval_s=86400)
+    assert post(env, proof())[0] == 200
+    fc = _OwnNode(VECTORS[1][2], tip=TIP)
+    sched = p2p.P2PScheduler(env["st"], fc, env["c"], clock=lambda: S + 86399)
+    assert [r["result"] for r in sched.run_due(S + 86399)] == ["ok"]
+
+
+def test_claiming_the_monitors_node_id_without_proof_is_not_enough(tmp_path):
+    env = make(tmp_path, p2p_interval_s=86400)
+    fc = _OwnNode(VECTORS[1][2], tip=TIP)
+    sched = p2p.P2PScheduler(env["st"], fc, env["c"], clock=lambda: S + 86399)
+    out = sched.run_due(S + 86399)
+    assert [(r["result"], r["reason"]) for r in out] == [("fail", "not_connected")]

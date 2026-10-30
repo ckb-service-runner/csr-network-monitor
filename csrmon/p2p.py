@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from .base58 import b58encode
 from .schedule import _unit, schedule_secret
+from .scoring import IDENTITY_PROOF_MAX_AGE_S
 
 
 IDENTITY_PREFIX = "CSR-NODE-IDENTITY-v1"
@@ -120,6 +121,21 @@ class P2PScheduler:
             out.append(r)
         return out
 
+    def _own_node_id(self):
+        try:
+            return self.chain.local_node_id()
+        except Exception:  # noqa: BLE001 - unknown own ID: every runner is judged by get_peers
+            return None
+
+    @staticmethod
+    def _is_own_node(runner, own, now) -> bool:
+        """A runner on the monitor's own node never appears in its `get_peers`. It counts as
+        verified when it proved that node's P2P key within the proof lifetime (the tip of that
+        node is watched by the cross-check); a bare claim of the ID is judged as usual."""
+        at = runner.get("identity_proven_at")
+        return (own is not None and runner.get("peer_id") == own and at is not None
+                and now - at <= IDENTITY_PROOF_MAX_AGE_S)
+
     def run_due(self, now=None) -> list:
         now = self.clock() if now is None else now
         if self.paused():
@@ -132,8 +148,10 @@ class P2PScheduler:
             peers = self.chain.get_peers()
             if not isinstance(peers, list):
                 raise ValueError("get_peers did not return a list")
-            results = [(r, evaluate_peer(peers, r["peer_id"], chain=self.chain,
-                                         sync_threshold=self.config.sync_threshold)) for r in due]
+            own = self._own_node_id()
+            results = [(r, "ok" if self._is_own_node(r, own, ts) else
+                        evaluate_peer(peers, r["peer_id"], chain=self.chain,
+                                      sync_threshold=self.config.sync_threshold)) for r in due]
         except Exception as e:  # noqa: BLE001 - any node failure: record and wait for the next period
             reason = f"node_error: {type(e).__name__}"
             out = []
