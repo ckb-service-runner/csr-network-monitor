@@ -82,3 +82,19 @@ test('svg markup', () => {
   assert.doesNotMatch(s, /style=|https?:|<script|xmlns/);
   assert.equal((M.svg([]).match(/<circle/g) || []).length, 0);
 });
+
+test('own node: larger dot, drawn last, marked in label and class', () => {
+  const M = load(COPY);
+  const L = [{ lat: 41, lon: -75, count: 4 }, { lat: 53, lon: 13, count: 2 }, { lat: -33, lon: 151, count: 1 }];
+  const d = M.dots(L, { lat: 53, lon: 13 });
+  assert.deepEqual(plain(d.map((x) => [x.lat, x.r, !!x.own])), [[41, 3.6, false], [-33, 2.6, false], [53, 4.2, true]]);
+  assert.equal(d[2].label, '53°N 13°E · 2 runners · your node');
+  // No own cell, an unknown cell or a malformed one: the same dots as without it.
+  for (const own of [undefined, null, { lat: 1, lon: 1 }, { lat: '53', lon: 13 }]) {
+    assert.deepEqual(plain(M.dots(L, own)), plain(M.dots(L)));
+  }
+  const s = M.svg(L, { own: { lat: 53, lon: 13 } });
+  assert.equal((s.match(/wm-own/g) || []).length, 1);
+  assert.match(s, /<circle class="wm-dot wm-own" cx="193" cy="31" r="4.2" data-index="2"><title>53°N 13°E · 2 runners · your node<\/title><\/circle>/);
+  assert.doesNotMatch(M.svg(L), /wm-own/);
+});

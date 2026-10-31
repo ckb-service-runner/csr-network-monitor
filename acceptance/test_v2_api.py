@@ -124,7 +124,8 @@ def test_nodes_endpoint(env):
     status, _, a = call(env, "GET", "/v1/nodes/QmA")
     assert status == 200
     assert set(a) == {"peer_id", "rank", "of", "provisional", "availability", "check_type", "attestation",
-                      "stake", "last_check_at", "score", "metrics"}
+                      "stake", "last_check_at", "score", "metrics", "location"}
+    assert a["location"] is None  # no geo lookup in this fixture
     # score_v1 and its terms, for the runner dashboard (Oct 2026)
     assert isinstance(a["score"], float) and 0 <= a["score"] <= 100
     assert set(a["metrics"]) == {"a30", "s30", "f30", "t", "age_days"}

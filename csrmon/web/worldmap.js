@@ -207,13 +207,18 @@
 
   function label(l) {
     return deg(l.lat, 'N', 'S') + ' ' + deg(l.lon, 'E', 'W') + ' · ' + l.count +
-      (l.count === 1 ? ' runner' : ' runners');
+      (l.count === 1 ? ' runner' : ' runners') + (l.own ? ' · your node' : '');
   }
+
+  // The own node's dot: 1.2 units larger than its count gives (the runner dashboard).
+  var OWN_EXTRA = 1.2;
 
   function isNum(v) { return typeof v === 'number' && isFinite(v); }
 
   // Valid entries only, same cell merged, largest first (so small dots are drawn on top).
-  function dots(locations) {
+  // own (optional) = {lat, lon} of the viewer's own cell: that dot gets own = true, a larger radius and is
+  // drawn last; ignored when no dot has that cell.
+  function dots(locations, own) {
     var cells = {}, list = [];
     (locations || []).forEach(function (l) {
       if (!l || !isNum(l.lat) || !isNum(l.lon) || !isNum(l.count)) return;
@@ -226,11 +231,16 @@
     });
     var max = 0;
     list.forEach(function (d) { if (d.count > max) max = d.count; });
+    var hasOwn = own && isNum(own.lat) && isNum(own.lon);
     list.forEach(function (d) {
       var p = project(d.lat, d.lon);
-      d.x = p.x; d.y = p.y; d.r = radius(d.count, max); d.label = label(d);
+      d.x = p.x; d.y = p.y; d.r = radius(d.count, max);
+      if (hasOwn && d.lat === own.lat && d.lon === own.lon) { d.own = true; d.r = round1(d.r + OWN_EXTRA); }
+      d.label = label(d);
     });
-    list.sort(function (a, b) { return b.r - a.r || b.lat - a.lat || a.lon - b.lon; });
+    list.sort(function (a, b) {
+      return (a.own ? 1 : 0) - (b.own ? 1 : 0) || b.r - a.r || b.lat - a.lat || a.lon - b.lon;
+    });
     return list;
   }
 
@@ -240,9 +250,10 @@
   }
 
   // SVG markup (no xmlns, no style attributes) for innerHTML. Classes: wm, wm-shadow, wm-land,
-  // wm-c (country), wm-dots, wm-dot. Each dot has data-index = its index in dots(locations).
+  // wm-c (country), wm-dots, wm-dot, wm-own (the own node's dot, with opts.own = {lat, lon}).
+  // Each dot has data-index = its index in dots(locations, opts.own).
   function svg(locations, opts) {
-    var o = opts || {}, ds = dots(locations), i, out = [], shapes = [];
+    var o = opts || {}, ds = dots(locations, o.own), i, out = [], shapes = [];
     out.push('<svg class="wm" viewBox="0 0 ' + WIDTH + ' ' + HEIGHT + '" role="img" aria-label="' +
       esc(o.label || 'Runners on a world map') + '">');
     for (i = 0; i < COUNTRIES.length; i++) shapes.push(COUNTRIES[i][2]);
@@ -253,7 +264,7 @@
     }
     out.push('</g><g class="wm-dots">');
     for (i = 0; i < ds.length; i++) {
-      out.push('<circle class="wm-dot" cx="' + ds[i].x + '" cy="' + ds[i].y + '" r="' + ds[i].r +
+      out.push('<circle class="wm-dot' + (ds[i].own ? ' wm-own' : '') + '" cx="' + ds[i].x + '" cy="' + ds[i].y + '" r="' + ds[i].r +
         '" data-index="' + i + '"><title>' + esc(ds[i].label) + '</title></circle>');
     }
     out.push('</g></svg>');
