@@ -70,6 +70,10 @@ class Config:
     csr_registry_code_hash: str = ""
     csr_registry_hash_type: str = "data2"
     config_type_args: str = ""
+    config_type_code_hash: str = ""
+    config_type_hash_type: str = "data2"
+    config_type_dep_tx: str = ""
+    config_type_dep_index: int = 0
     clock_update_interval_s: int = 3600
     clock_update_fee_shannons: int = 100000
     attest_validity_days: int = 7
@@ -91,8 +95,10 @@ _MIN = {
     "ping_port": 1, "discovery_interval_s": 1, "discovery_backoff_s": 1,
     "answer_deadline_s": 1, "reachable_window_s": 1, "clock_update_interval_s": 1,
     "attest_validity_days": 1, "attest_min_ok_24h": 1, "attest_cache_s": 1,
-    "min_stake_ckb": 1, "attest_max_clock_age_s": 600,
+    "min_stake_ckb": 1, "attest_max_clock_age_s": 600, "config_type_dep_index": 0,
 }
+# maximum allowed value (inclusive); the on-chain cap is 8 days beyond the clock (D24 A)
+_MAX = {"attest_validity_days": 7, "config_type_dep_index": 0xFFFFFFFF}
 _HASH_TYPES = ("type", "data", "data1", "data2")
 # keys that existed once and were removed; a config that still has them gets a clear message
 _REMOVED = {
@@ -154,6 +160,8 @@ def load_config(path) -> Config:
             raise ConfigError(f"{k!r} must not be empty")
         if k in _MIN and v < _MIN[k]:
             raise ConfigError(f"{k!r} must be >= {_MIN[k]}")
+        if k in _MAX and v > _MAX[k]:
+            raise ConfigError(f"{k!r} must be <= {_MAX[k]}")
     if "probe_timeout_s" in raw and raw["probe_timeout_s"] <= 0:
         raise ConfigError("'probe_timeout_s' must be > 0")
     for k in ("listen_port", "ping_port"):
@@ -164,7 +172,8 @@ def load_config(path) -> Config:
     if cfg.network not in ("testnet", "mainnet"):
         raise ConfigError("'network' must be 'testnet' or 'mainnet'")
     for k in ("stat_cell_acp_hash_type",
-              "stat_cell_sighash_hash_type", "csr_registry_hash_type"):
+              "stat_cell_sighash_hash_type", "csr_registry_hash_type",
+              "config_type_hash_type"):
         if getattr(cfg, k) not in _HASH_TYPES:
             raise ConfigError(f"{k!r} must be one of {_HASH_TYPES}")
     if cfg.stat_cell_acp_dep_type not in ("code", "dep_group"):
@@ -180,11 +189,11 @@ def load_config(path) -> Config:
                 or parts[-2] != "p2p" or any(c.isspace() for c in a)):
             raise ConfigError("'p2p_public_address' must be a multiaddr ending in /p2p/<node id>")
 
-    if cfg.config_type_args:
-        a = cfg.config_type_args
-        if not (a.startswith("0x") and len(a) == 66
-                and all(c in "0123456789abcdefABCDEF" for c in a[2:])):
-            raise ConfigError("'config_type_args' must be empty or 32 bytes hex (0x...)")
+    for k in ("config_type_args", "config_type_code_hash", "config_type_dep_tx"):
+        a = getattr(cfg, k)
+        if a and not (a.startswith("0x") and len(a) == 66
+                      and all(c in "0123456789abcdefABCDEF" for c in a[2:])):
+            raise ConfigError(f"{k!r} must be empty or 32 bytes hex (0x...)")
 
     try:
         u = urlparse(cfg.node_rpc)

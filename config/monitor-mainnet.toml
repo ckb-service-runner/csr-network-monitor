@@ -22,7 +22,7 @@ crosscheck_interval_s = 600
 aggregate_interval_s = 600
 
 # --- registration discovery ---
-allow_insecure_endpoints = false   # true only for tests (allows http:// and loopback endpoints)
+allow_insecure_endpoints = false   # true only for tests (allows http:// and loopback/private endpoints)
 
 # --- CSR alignment (v2) ---
 # Port of the CSR ping API on CSR nodes (POST /v1/challenge).
@@ -31,13 +31,20 @@ discovery_interval_s = 600     # how often get_peers is read and new peers are c
 discovery_backoff_s = 86400    # wait before challenging a peer that did not answer again
 answer_deadline_s = 60         # outbound nodes: time to answer after check-in
 reachable_window_s = 3600      # a node counts as reachable if it was probed ok within this window
-# Config cell (Type ID, owned by the monitor key). Args come from `csr-dev deploy-contracts`.
+# Config cell (csr-config-type script, owned by the monitor key). Values come from
+# `csr-dev deploy-contracts` / CSR's deployments/<network>.json (contracts-v3). Config cell,
+# registry scan and attestations need both config_type_args and config_type_code_hash.
 # config_type_args = "0x..."
-# Registry type script code hash (data2) from CSR's deployments/<network>.json.
+# config_type_code_hash = "0x..."          # csr-config-type code hash
+# config_type_hash_type = "data2"
+# config_type_dep_tx = "0x..."             # csr-config-type code cell (cell dep of the clock update)
+# config_type_dep_index = 0
+# Registry v3 type script code hash from CSR's deployments/<network>.json.
 # csr_registry_code_hash = "0x..."
-clock_update_interval_s = 3600 # config cell clock_ms update (needs stat_cell_sighash_dep_tx)
+# csr_registry_hash_type = "data2"
+clock_update_interval_s = 3600 # config cell clock_ms update (needs stat_cell_sighash_dep_tx and config_type_dep_tx)
 clock_update_fee_shannons = 100000
-attest_validity_days = 7       # attestation expiry = clock_ms + this
+attest_validity_days = 7       # attestation expiry = clock_ms + this (at most 7; capped at clock + 8 days - 1 hour)
 attest_min_ok_24h = 1          # ok probes in the last 24 h required for POST /v1/attest
 min_stake_ckb = 10000          # minimum capacity (CKB) of the Nervos DAO deposit behind a registration
 attest_cache_s = 3600          # re-issue the same attestation within this time

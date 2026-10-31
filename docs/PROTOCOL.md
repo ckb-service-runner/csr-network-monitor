@@ -1,6 +1,6 @@
 # CSR wire protocol (monitor side)
 
-**CSR (CKB Service Runner, `psawyerberlin/ckb-service-runner`) is the source of truth.** The monitor speaks the protocols defined there:
+**CSR (CKB Service Runner, `ckb-service-runner/ckb-service-runner`) is the source of truth.** The monitor speaks the protocols defined there:
 
 - `spec/ping-protocol.md` – ping protocol v1 (challenge, binding, answer, check-in)
 - `spec/registry.md` – registry cell, attestation, config cell
@@ -21,10 +21,12 @@ This file summarises what the monitor implements; on any difference the CSR spec
 Fields are joined with `\n`, no trailing newline, numbers in decimal.
 
 - `CSR-PING-CHALLENGE-v1\n{nonce}\n{height}\n{issued_at}` – signed by the monitor.
-- `CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}` – signed by the P2P/node key (binding_sig); proves the service key belongs to the node id.
+- `CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}` – the plain binding `binding_sig`, checked against the service key and the peer id. It is *not* signed by the P2P key; the identity proof `CSR-NODE-IDENTITY-v1` is what ties the service key to the node's P2P identity.
 - `CSR-PING-ANSWER-v1\n` + the 13 answer fields in order: `nonce, peer_id, service_pubkey, binding_sig, network, csr_version, node_version, r2_state, tip_number, tip_hash, block_hash_at_height, uptime_s, ping_mode` – signed by the service key.
 - `CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}` – signed by the node's P2P key (`p2p_sig`) **and** by the service key (`service_sig`); body of `POST /v1/identity`.
-- `CSR-ATTEST-v1`: attestation digest = `ckb_blake2b("CSR-ATTEST-v1" ‖ molecule(AttestationBody{peer_id, service_pubkey, network, expiry_ms}))`.
+- `CSR-ATTEST-v2` (monitor-v3, D21 A): attestation digest = `ckb_blake2b("CSR-ATTEST-v2" ‖ AttestationBodyV2)` with
+  `AttestationBodyV2 = table { peer_id: Bytes, service_pubkey: Byte33, network: byte, expiry_ms: Uint64, stake: OutPoint, registry_type_hash: Byte32 }`.
+  The signature (65 bytes `r ‖ s ‖ recid`) thus names the stake out point and the type hash of the `csr-registry` script it is valid for. The older `CSR-ATTEST-v1` (body without `stake` and `registry_type_hash`) is no longer issued or accepted.
 
 ## Routes
 
@@ -32,7 +34,7 @@ Fields are joined with `\n`, no trailing newline, numbers in decimal.
 
 Inbound mode. The monitor sends `{"nonce","height","issued_at","monitor_sig"}` (exactly these fields) and receives `{"answer": {13 fields}, "sig"}` (`tip_number`, `uptime_s` are numbers, the rest strings). The node answers 400 (bad nonce / not fresh, `|now − issued_at| > 60 s` / `height` above its tip), 403 (bad monitor signature), 409 (nonce replay), 429 (rate limit 10/min/IP), 503 (node data unavailable).
 
-The monitor marks a probe `fail` for reasons such as `bad_format`, `late`, `bad_nonce`, `bad_signature`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, and transport reasons `timeout`, `unreachable`, `bad_status`, `no_response`, `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync. An answer with an empty `block_hash_at_height` and a `tip_number` below the challenge height is a reachable, not-in-sync probe (`ok`, `in_sync: false`, lag from the tips); an empty hash with `tip_number >= height` is `wrong_block_hash`. A runner's 400 `{"error": "clock_skew"}` is recorded with reason `clock_skew` (other 400s: `rejected_400`).
+The monitor marks a probe `fail` with one of these reasons: `bad_format`, `late`, `wrong_network`, `bad_nonce`, `bad_signature`, `bad_binding`, `peer_id_mismatch`, `wrong_block_hash`, `unknown_tip`, `tip_below_height`, `pubkey_changed`; from the HTTP status of the node `clock_skew` (400 with `{"error": "clock_skew"}`), `rejected_400` (other 400s), `bad_monitor_key` (403), `replay` (409), `rate_limited` (429), `node_unavailable` (503), `bad_status` (other); transport reasons `timeout`, `unreachable`; and slot reasons `no_answer`, `no_checkin`. A correct answer more than `sync_threshold` blocks behind is *answered* but not in sync. An answer with an empty `block_hash_at_height` and a `tip_number` below the challenge height is a reachable, not-in-sync probe (`ok`, `in_sync: false`, lag from the tips); an empty hash with `tip_number >= height` is `wrong_block_hash`.
 
 **Tip challenge.** The challenge `height` is drawn from the last 100 blocks: `tip − randrange(1, 101)` (clamped at 0), `tip` being the monitor's tip. After the signature, binding, peer and `block_hash_at_height` checks, the monitor checks the answer's tip, with `mtip` the monitor's tip:
 
@@ -101,13 +103,13 @@ On success the runner of `service_pubkey` (created with mode `outbound` if unkno
 
 ### `POST /v1/attest`
 
-Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = out point text `0x<64 hex>:<index>` of the Nervos DAO deposit); reply is CSR's attestation file `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature","monitor_pubkey"}` (input of `csr register prepare`).
+Body `{"peer_id","service_pubkey","binding_sig","network","stake"}` (`stake` = out point text `0x<64 hex>:<index>` of the Nervos DAO deposit); reply is CSR's attestation file `{"version": 2, "peer_id","service_pubkey","network","network_id","expiry_ms","stake","registry_type_hash","signature","monitor_pubkey"}` (input of `csr register prepare`): `stake` is the requested out point (normalised to lowercase), `registry_type_hash` the type hash of this monitor's `csr-registry` script (also in `GET /v1/monitor` as `csr_registry_type_hash`), `signature` the `CSR-ATTEST-v2` signature (`0x` + 130 hex).
 
 Statuses and error codes are defined once, in `spec/monitor-public-api.md` of the runner repository; this document keeps no table of its own for this route. Reminder of the codes added by the 2026-10 audit fixes: 403 `stake_mismatch` (the peer or service key already has a registry cell and the request does not name that cell's deposited stake; an operator who changes the deposit after a withdrawal removes the registry cell first), 429 `rate_limited` (`rate_limit_post_per_min`) and 503 `clock_stale` (the config cell clock is older than `attest_max_clock_age_s`). The eligibility policy is described under "Registry, config cell and attestations" below.
 
 ### `GET /v1/network` and `GET /v1/nodes/{peer_id}`
 
-Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `peer_connected` / `challenge_only`, see below); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash` and `csr_registry_code_hash`, plus `registry_last_scan_at` (unix seconds or null), `clock_ms`, `clock_age_s`, `config_cell_spare_ckb` (or null) and `crosscheck` (`ok`, `diverged`, `unknown`, `off`) and `p2p_address` (the monitor node's public P2P multiaddr `/ip4/…/tcp/…/p2p/<node id>` from `p2p_public_address`, `null` when not set). Unexpected errors answer `500 {"error":"internal"}`; `/v1/network` and `/v1/locations` are cached for 30 s. The runner answer (`/v1/{network}/runners/{id}`) also carries `check_type`, `identity_proven_at` (Unix time or `null`) and `unranked_reason` (`null` when ranked, else `provisional`, `flagged`, `stake` or `identity_unproven`).
+Read by the CSR dashboard (see `spec/monitor-public-api.md`). `/v1/network` returns `nodes_total`, `nodes_reachable` (probed ok within `reachable_window_s`), `countries` and `updated_at`. `/v1/nodes/{peer_id}` returns the ranking data, `attestation` and a `stake` object `{"status": "deposited"|"withdrawn"|"invalid"|"duplicate"|"none", "capacity_ckb": int|null, "outpoint": string|null}`, plus the ranking data of a node with `check_type` (`p2p_verified` / `peer_connected` / `challenge_only`, see below); it answers 200 for every known runner and every peer with a registry row (with `rank: null` and `provisional` for unranked nodes, and `check_type: "none"` for a peer without a runner) and 404 `unknown_node` only for an unknown peer. `GET /v1/monitor` returns the monitor public key, version, tip, `stat_cell_type_hash`, `csr_config_type_hash`, `csr_registry_type_hash` and `csr_registry_code_hash`, plus `registry_last_scan_at` (unix seconds or null), `clock_ms`, `clock_age_s`, `config_cell_spare_ckb` (or null) and `crosscheck` (`ok`, `diverged`, `unknown`, `off`) and `p2p_address` (the monitor node's public P2P multiaddr `/ip4/…/tcp/…/p2p/<node id>` from `p2p_public_address`, `null` when not set). Unexpected errors answer `500 {"error":"internal"}`; `/v1/network` and `/v1/locations` are cached for 30 s. The runner answer (`/v1/{network}/runners/{id}`) also carries `check_type`, `identity_proven_at` (Unix time or `null`) and `unranked_reason` (`null` when ranked, else `provisional`, `flagged`, `stake` or `identity_unproven`).
 
 ### `GET /v1/locations`
 
@@ -162,22 +164,27 @@ slot = `int(ts // probe_interval_s)`. At most one outcome is recorded per runner
 
 ## Registry, config cell and attestations
 
-- The monitor owns the **config cell** (Type ID; lock = the monitor key's secp256k1 sighash lock). Data = `monitor_pubkey (33) ‖ clock_ms (u64 LE) ‖ 8 reserved bytes`. Every `clock_update_interval_s` the monitor spends it into the same lock/type with `clock_ms` = timestamp of the chain tip; the fee is taken from the cell capacity.
-- **Registry cell** (`csr-registry`, Registry v2): type script `{code_hash: csr_registry_code_hash, hash_type: "data2", args: config cell type hash}`; lock `csr-dual-lock` with 64-byte args `owner_lock_hash (32) ‖ runner_lock_hash (32)`. Data is a molecule table with 7 fields:
+- The monitor owns the **config cell**: type script **`csr-config-type`** `{code_hash: config_type_code_hash, hash_type: config_type_hash_type (default data2), args: config_type_args}` (monitor-v3; before it was a Type ID script), lock = the monitor key's secp256k1 sighash lock. Data = `monitor_pubkey (33) ‖ clock_ms (u64 LE) ‖ 8 reserved bytes`. Every `clock_update_interval_s` the monitor spends it into the same lock/type with `clock_ms` = timestamp of the chain tip; the fee is taken from the cell capacity. The transaction has the sighash dep group and the `csr-config-type` code cell (`config_type_dep_tx`/`config_type_dep_index`, dep type `code`) as cell deps. **The clock only moves forward and the key never changes**: the monitor skips the update when the tip timestamp is not newer than `clock_ms` and copies the key and the reserved bytes unchanged; the contract refuses anything else anyway.
+- **Registry cell** (`csr-registry`, **Registry v3**): type script `{code_hash: csr_registry_code_hash, hash_type: csr_registry_hash_type (default data2), args: config_id}` (the config cell's `config_type_args`, CSR `spec/registry.md` §2); its type hash is the **registry type hash** that the attestation names. Lock `csr-dual-lock` with 32- or 64-byte args. Data is a molecule table with 10 fields:
 
   | # | field | type |
   |--:|---|---|
-  | 0 | `peer_id` | `Bytes` (UTF-8) |
-  | 1 | `service_pubkey` | `Byte33` |
-  | 2 | `payout_lock_hash` | `Byte32` (lock hash of the anyone-can-pay tip cell) |
-  | 3 | `network` | `byte` (0 mainnet, 1 testnet, 2 devnet) |
-  | 4 | `attestation` | `Attestation {peer_id, service_pubkey, network, expiry_ms, signature[65]}` |
-  | 5 | `prekeys` | `Bytes` |
-  | 6 | `stake` | `OutPoint` = `tx_hash (32) ‖ index (u32 LE)` |
+  | 0 | `version` | `byte`, always 3 |
+  | 1 | `peer_id` | `Bytes` (UTF-8, one node ID) |
+  | 2 | `service_pubkey` | `Byte33` |
+  | 3 | `payout_lock_hash` | `Byte32` (lock hash of the anyone-can-pay tip cell) |
+  | 4 | `network` | `byte` (0 mainnet, 1 testnet, 2 devnet) |
+  | 5 | `stake` | `OutPoint` = `tx_hash (32) ‖ index (u32 LE)` |
+  | 6 | `expiry_ms` | `Uint64` |
+  | 7 | `attestation_sig` | `Signature` (65 bytes, `CSR-ATTEST-v2` over fields 1, 2, 4, 6, 5 and the registry type hash) |
+  | 8 | `endpoint` | `Bytes` (UTF-8 URL, empty = none) |
+  | 9 | `prekeys` | `Bytes` |
 
-  v1 cells (6 fields) are invalid. The monitor scans these cells every `probe_interval_s` and keeps those whose network matches, whose attestation was signed by this monitor and matches the cell, and whose stake is deposited.
+  v1 (6 fields) and v2 (7 fields) cells are invalid, as is any table that is not exactly this one with version 3. The monitor scans these cells every `probe_interval_s` and keeps those whose network matches, whose `attestation_sig` is this monitor's `CSR-ATTEST-v2` signature over the cell's peer ID, service key, network, expiry, stake and the registry type hash, and whose stake is deposited.
+- **Lifetime cap** (D24 A): `csr-registry` refuses an attestation that expires more than 8 days after the config cell clock. The monitor issues `expiry_ms = min(clock_ms + attest_validity_days, clock_ms + 8 days − 1 hour)` (`MAX_LIFETIME_MS`); `attest_validity_days` above 7 is a config error.
+- **Endpoint** (F-MON-014): a registered runner whose cell has an `endpoint` is challenged there (pull mode, `POST <endpoint>/v1/challenge`), even when it is not a peer of the monitor's CKB node; it must answer with the registered `peer_id` and `service_pubkey` (otherwise `peer_id_mismatch` / `pubkey_changed`, retried after `discovery_backoff_s`). The endpoint must be an `http://` or `https://` URL without credentials, query or fragment whose host (every resolved address) is a public address, unless `allow_insecure_endpoints`; the rule is checked again before every probe (failure `endpoint_refused`). Redirects are never followed (a 3xx answer is a failed probe). Without an endpoint, discovery works through `get_peers` as before. The API never returns the raw endpoint, only `has_endpoint`.
 - **Stake** (D-A7-1): the stake is a Nervos DAO deposit in the operator's wallet (D-A8-1: the registry owner may be any lock, CSR uses the runner's own wallet; the deposit owner consents with a signed message `CSR-STAKE-CONSENT-v1|<network>|<stake out point>|<service pubkey>|<peer id>`, digest `blake2b-256("Nervos Message:" ‖ text)`, which the `csr-registry` contract checks on creation and on every change of stake or owner, errors 21–23; the monitor therefore does not compare the owners). Out points are written `0x<64 hex>:<index decimal>`. It is **deposited** when `get_live_cell` says `live` and the cell has the DAO type script `{code_hash: 0x82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e, hash_type: type, args: 0x}`, data of exactly 8 zero bytes, capacity ≥ `min_stake_ckb` (default 10 000 CKB). States: `deposited`; `withdrawn` (the cell is dead); `invalid` (anything else, with a reason: `not_found`, `not_dao`, `not_deposit`, `too_small`); `duplicate` (**one deposit, one registration**: of several registry cells naming the same deposit only the oldest – lowest block number, tx index, out point – counts). Only registrations with a deposited stake are valid.
-- **Attestation policy** (`POST /v1/attest`): the binding signature must verify, the network must be the monitor's, and the node must be an active runner with that `peer_id` and at least `attest_min_ok_24h` (default 1) successful probes in the last 24 h; otherwise `403 not_eligible`. The `stake` must be a deposited DAO cell of at least `min_stake_ckb` (`403 stake_invalid` with a `reason`) not used by another peer's registration (`403 stake_in_use`); it is re-checked on every request, also when the cached attestation is returned. Validity = config cell `clock_ms` + `attest_validity_days` (default 7 days). The same attestation is returned from a cache for `attest_cache_s` (default 3600 s).
+- **Attestation policy** (`POST /v1/attest`): the binding signature must verify, the network must be the monitor's, and the node must be an active runner with that `peer_id` and at least `attest_min_ok_24h` (default 1) successful probes in the last 24 h; otherwise `403 not_eligible`. The `stake` must be a deposited DAO cell of at least `min_stake_ckb` (`403 stake_invalid` with a `reason`) not used by another peer's registration (`403 stake_in_use`); it is re-checked on every request, also when the cached attestation is returned. Validity = config cell `clock_ms` + `attest_validity_days` (default 7 days, at most 7), capped by the lifetime cap above. The attestation names the requested stake, which for a registered runner is tied to its registry (`stake_in_use`). The same attestation is returned from a cache for `attest_cache_s` (default 3600 s), only for the same stake.
 
 ## Ranking and stake
 
@@ -195,7 +202,7 @@ Every Monday 00:00 UTC (epoch boundaries) the monitor builds a Merkle tree over 
 
 Leaf (47 bytes): `runner_id(32) ‖ score×100 u16 ‖ a30×10000 u16 ‖ a365×10000 u16 ‖ f30×10000 u16 ‖ country(2 ASCII, "??" unknown) ‖ asn u32 ‖ flags u8` (flags: 1 provisional, 2 identity mismatch, 4 bad binding).
 
-Epoch data (159 bytes) stored as the stat cell data:
+Epoch data is a fixed binary layout of 159 bytes (not Molecule), stored as the stat cell data:
 
 | Offset | Size | Field |
 |---|---|---|
@@ -210,6 +217,8 @@ Epoch data (159 bytes) stored as the stat cell data:
 | 30 | 32 | Merkle root |
 | 62 | 32 | hash of the previous epoch data (zeros for the first) |
 | 94 | 65 | monitor signature over `ckb_blake2b("CSR/v1/epoch" ‖ data[0:94])` |
+
+`GET /v1/{network}/epochs` returns all epochs in one reply (`{"items": [...]}`); the list is not paged and `limit` and `cursor` are ignored.
 
 ## Merkle rules
 

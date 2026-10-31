@@ -92,7 +92,9 @@ def test_config_warnings(tmp_path):
 def test_example_config_and_install_guide_name_the_a8_hash():
     for p in (("config", "monitor-testnet.toml"), ("docs", "INSTALL.md")):
         t = open(os.path.join(ROOT, *p)).read()
-        assert A8_HASH in t and A7_HASH not in t, p
+        # Integration (Oct 2026): after monitor-v3 the docs carry the contracts-v3 placeholders until the
+        # testnet redeploy; the old A7 hash must stay out either way.
+        assert (A8_HASH in t or "<TESTNET_CSR_REGISTRY_CODE_HASH>" in t) and A7_HASH not in t, p
 
 
 def test_monitor_endpoint_reports_scan_and_clock(env):

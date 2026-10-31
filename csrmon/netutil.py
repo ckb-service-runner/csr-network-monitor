@@ -47,7 +47,7 @@ def _read_limited(resp, max_bytes, deadline):
 
 
 def fetch_status(url, data=None, *, timeout=5, max_bytes=4096, headers=None):
-    """Return (status, body) for any HTTP status that is not a redirect."""
+    """Return (status, body); a redirect is not followed and comes back as (3xx, b"")."""
     deadline = time.monotonic() + timeout
     hdrs = dict(headers or {})
     hdrs.setdefault("User-Agent", USER_AGENT)
@@ -63,7 +63,8 @@ def fetch_status(url, data=None, *, timeout=5, max_bytes=4096, headers=None):
         with resp:
             status = resp.status if hasattr(resp, "status") else resp.code
             if 300 <= status < 400:
-                raise FetchError(f"redirect refused ({status})")
+                # never followed: the caller sees the redirect status and no body
+                return status, b""
             # the socket timeout bounds each read; the loop bounds the total time
             return status, _read_limited(resp, max_bytes, deadline)
     except FetchError:
