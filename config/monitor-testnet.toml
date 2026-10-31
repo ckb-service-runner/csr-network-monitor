@@ -73,8 +73,8 @@ rate_limit_per_min = 60
 trusted_proxies = ["127.0.0.1", "::1"]   # X-Forwarded-For is honoured only from these
 
 # --- ranking gates and retention ---
-gate_min_days = 365
-gate_min_runners = 60
+gate_min_days = 120
+gate_min_runners = 20
 gate_max_asn_share = 0.25
 gate_max_country_share = 0.5
 provisional_days = 7

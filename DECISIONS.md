@@ -205,3 +205,14 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
 - **D33/D34**: a second, mainnet instance (`csr-network-monitor@mainnet`) on pswsl with its own key; its URL
   and public key ship in the runner's `config/networks/mainnet.toml`.
 - **D36**: Phase 2 gate defaults `gate_min_days = 120`, `gate_min_runners = 20`; diversity limits unchanged.
+
+## mon-rank-without-stake
+
+- `scoring.unranked_reason` no longer returns `stake`; `rank_runners` keeps its `require_stake` parameter for
+  callers but it no longer changes the rank. `stake_required(config)` still tells whether registry mode is on.
+- `epochs.FLAG_STAKED = 8`, set when the item's `stake_status` is `deposited`; every ranked runner is in the
+  leaves again (leaf layout unchanged). The epoch `runner_count` counts every ranked runner.
+- Gate defaults 120 days / 20 runners (config defaults and both example configs).
+- Changed tests: the three stake-ranking tests in `acceptance/aiworker-fix-monitor-stake-ranking/test_fix_stake_ranking.py`
+  now check the D29 rule; `test_phase1.py::test_config_minimal_defaults` (120/20); `test_phase7.py::test_gate_not_met`
+  (progress 1/20). New: `acceptance/aiworker-mon-rank-without-stake/test_rank_without_stake.py`.

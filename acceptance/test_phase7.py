@@ -220,7 +220,7 @@ def test_gate_not_met(tmp_path):
     s = scoring.network_summary(st, TODAY, cfg)
     g = s["gate"]
     assert g["history_days"] == 73 and g["runners"] == 1 and g["met"] is False
-    assert g["progress"] == round(1 / 60, 4)
+    assert g["progress"] == round(1 / 20, 4)
     assert s["largest_asn_share"] == 1.0
 
 

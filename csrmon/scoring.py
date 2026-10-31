@@ -71,8 +71,6 @@ def unranked_reason(item):
         return "provisional"
     if any(f in item["flags"] for f in _BAD_FLAGS):
         return "flagged"
-    if item.get("stake_required") and item["stake_status"] != "deposited":
-        return "stake"
     if not item["identity_ok"]:
         return "identity_unproven"
     return None
