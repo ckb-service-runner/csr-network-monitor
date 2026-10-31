@@ -63,13 +63,13 @@ function renderRanking(items) {
 
 async function main() {
   try {
-    const mon = await getJson("/v1/monitor");
+    const mon = await getJson("v1/monitor");
     const net = mon.network;
     $("network-name").textContent = net;
     const [summary, runners, locations] = await Promise.all([
-      getJson(`/v1/${net}/summary`),
-      getJson(`/v1/${net}/runners?limit=500`),
-      getJson("/v1/locations").catch(() => null),
+      getJson(`v1/${net}/summary`),
+      getJson(`v1/${net}/runners?limit=500`),
+      getJson("v1/locations").catch(() => null),
     ]);
     renderSummary(summary);
     renderMap(locations, summary.by_country);

@@ -46,8 +46,8 @@ def test_index_served(api):
     for i in ("network-name", "summary", "gate", "map", "ranking", "disclaimer"):
         assert re.search(rf'id="{i}"', html), i
     assert re.search(r'<meta[^>]+name="viewport"', html)
-    assert re.search(r'<script[^>]+type="module"[^>]+src="/static/app\.mjs"', html)
-    assert re.search(r'<link[^>]+href="/static/style\.css"', html)
+    assert re.search(r'<script[^>]+type="module"[^>]+src="(/)?static/app\.mjs"', html)
+    assert re.search(r'<link[^>]+href="(/)?static/style\.css"', html)
     assert "reputation source, not a proof" in html
     assert re.search(r'<table[^>]*>[\s\S]*<thead>[\s\S]*<tbody', html)
 
@@ -60,7 +60,7 @@ def test_static_types(api):
         assert body == open(os.path.join(WEB, name), "rb").read()
     app = open(os.path.join(WEB, "app.mjs"), encoding="utf-8").read()
     assert re.search(r"""from\s+["']\./format\.mjs["']""", app)
-    assert "/v1/monitor" in app and "/summary" in app and "/runners" in app
+    assert "v1/monitor" in app and "/summary" in app and "/runners" in app
 
 
 def test_static_rejects_other_paths(api):

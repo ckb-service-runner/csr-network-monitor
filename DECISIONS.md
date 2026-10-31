@@ -216,3 +216,12 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
 - Changed tests: the three stake-ranking tests in `acceptance/aiworker-fix-monitor-stake-ranking/test_fix_stake_ranking.py`
   now check the D29 rule; `test_phase1.py::test_config_minimal_defaults` (120/20); `test_phase7.py::test_gate_not_met`
   (progress 1/20). New: `acceptance/aiworker-mon-rank-without-stake/test_rank_without_stake.py`.
+
+## D40 – one hostname for both networks (31 Oct 2026)
+
+- The monitors are reached at one hostname with a path per network (`/testnet/`, `/mainnet/`), e.g.
+  `https://csr-monitor.chainsolution.net/testnet`. Still one process per network (8480, 8481). Caddy strips the prefix
+  (`handle_path`); the runner keeps the path of its monitor URL (`{url}/v1/...`).
+- The web page uses relative paths (`static/…`, `v1/…`) so it works under a prefix and at the root. Changed tests:
+  `test_phase9.py` and `map/test_map_page.py` accept relative paths. New: `acceptance/aiworker-monitor-path-prefix/`.
+- DNS "only" (no CDN proxy): the monitor must see the runners' real IPs for country and ASN.
