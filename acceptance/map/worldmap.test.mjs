@@ -42,11 +42,11 @@ test('project', () => {
 
 test('radius', () => {
   const M = load(COPY);
-  assert.equal(M.radius(1, 1), 6);
-  assert.equal(M.radius(4, 4), 6);
-  assert.equal(M.radius(1, 4), 4.3);
+  assert.equal(M.radius(1, 1), 3.6);   // Oct 2026: dots at 60 % of the first size
+  assert.equal(M.radius(4, 4), 3.6);
+  assert.equal(M.radius(1, 4), 2.6);
   assert.equal(M.radius(0, 4), 0);
-  assert.equal(M.radius(5, 0), 6);
+  assert.equal(M.radius(5, 0), 3.6);
 });
 
 test('label', () => {
@@ -63,7 +63,7 @@ test('dots: validation, merging, order', () => {
     { lat: 95, lon: 0, count: 1 }, { lat: 0, lon: 0, count: 0 }, { lat: 'x', lon: 0, count: 1 },
     { lat: 1, lon: 1, count: 1.5 }, null, { lat: -33, lon: 151, count: 1 },
   ]);
-  assert.deepEqual(plain(d.map((x) => [x.lat, x.lon, x.count, x.r])), [[41, -75, 4, 6], [53, 13, 2, 5], [-33, 151, 1, 4.3]]);
+  assert.deepEqual(plain(d.map((x) => [x.lat, x.lon, x.count, x.r])), [[41, -75, 4, 3.6], [53, 13, 2, 3], [-33, 151, 1, 2.6]]);
   assert.equal(d[1].label, '53°N 13°E · 2 runners');
   assert.equal(d[1].x, 193);
   assert.equal(d[1].y, 31);
@@ -76,7 +76,7 @@ test('svg markup', () => {
   assert.match(s, /^<svg class="wm" viewBox="0 0 360 154" role="img" aria-label="a&lt;b">/);
   assert.ok(s.endsWith('</svg>'));
   assert.equal((s.match(/<circle class="wm-dot"/g) || []).length, 2);
-  assert.match(s, /<circle class="wm-dot" cx="193" cy="31" r="6" data-index="0"><title>53°N 13°E · 2 runners<\/title><\/circle>/);
+  assert.match(s, /<circle class="wm-dot" cx="193" cy="31" r="3.6" data-index="0"><title>53°N 13°E · 2 runners<\/title><\/circle>/);
   assert.equal((s.match(/<path class="wm-c"/g) || []).length, 177);
   assert.match(s, /<g class="wm-shadow"/);
   assert.doesNotMatch(s, /style=|https?:|<script|xmlns/);
