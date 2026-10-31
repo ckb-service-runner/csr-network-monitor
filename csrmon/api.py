@@ -456,7 +456,14 @@ class Api:
         else:
             avail = {"d7": round(item["a7"], 4), "d30": round(item["a30"], 4),
                      "d365": round(item["a365"], 4)}
+        if item is None:
+            score, metrics = None, None
+        else:
+            score = item["score"]
+            metrics = {k: round(item[k], 4) for k in ("a30", "s30", "f30", "t")}
+            metrics["age_days"] = item["age_days"]
         return {"peer_id": peer_id, "rank": None if item is None else item.get("rank"),
+                "score": score, "metrics": metrics,
                 "of": sum(1 for i in ranking if i.get("rank") is not None),
                 "provisional": bool(item and item.get("provisional")),
                 "availability": avail, "check_type": check_type,
