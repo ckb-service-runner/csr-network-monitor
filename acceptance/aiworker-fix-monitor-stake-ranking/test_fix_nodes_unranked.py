@@ -15,8 +15,9 @@ CONFIG_ARGS = "0x" + "a9" * 32
 REGISTRY_CODE = "0x" + "47" * 32
 NOW = 1_792_281_600
 EXP = NOW * 1000 + 7 * 86400000
+# Integration (Oct 2026): plus score and metrics (score_v1 terms) for the runner dashboard.
 KEYS = {"peer_id", "rank", "of", "provisional", "availability", "check_type", "attestation", "stake",
-        "last_check_at"}
+        "last_check_at", "score", "metrics"}
 
 
 def sk(n):

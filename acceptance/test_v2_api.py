@@ -124,7 +124,11 @@ def test_nodes_endpoint(env):
     status, _, a = call(env, "GET", "/v1/nodes/QmA")
     assert status == 200
     assert set(a) == {"peer_id", "rank", "of", "provisional", "availability", "check_type", "attestation",
-                      "stake", "last_check_at"}
+                      "stake", "last_check_at", "score", "metrics"}
+    # score_v1 and its terms, for the runner dashboard (Oct 2026)
+    assert isinstance(a["score"], float) and 0 <= a["score"] <= 100
+    assert set(a["metrics"]) == {"a30", "s30", "f30", "t", "age_days"}
+    assert a["metrics"]["a30"] == round(139 / 144, 4)
     assert a["peer_id"] == "QmA" and a["rank"] == 1 and a["of"] == 2
     assert a["availability"] == {"d7": round(139 / 144, 4), "d30": round(139 / 144, 4),
                                  "d365": round(139 / 144, 4)}
