@@ -194,3 +194,14 @@ Registry v3, `CSR-ATTEST-v2`, `csr-config-type`, endpoints (contracts-v3; D20 A,
 - No `tools/shrink_city.py`: the city CSV is snapped while loading (`csrmon/geo.py`), so `INSTALL.md` gives the measured memory (about 500 MB peak plus swap on the reference host with the raw CSV) and mentions no tool.
 - `PROTOCOL.md`: stat cell is a fixed binary layout of 159 bytes (not Molecule); the epoch list is documented as not paged (no code change); probe failure reasons copied from `csrprobe.py`; the plain binding is not claimed to be signed by the P2P key, the identity proof is `CSR-NODE-IDENTITY-v1`.
 - The first transfer to a runner wallet is not stated here; the README refers to the runner README.
+
+## Mainnet dashboard release (D29–D39, 31 Oct 2026)
+
+Full list in the runner repository, `docs/decisions.md`. For the monitor:
+- **D29**: ranking never depends on the stake, also in registry mode; `stake_status` stays in every item and the
+  epoch leaves get a `FLAG_STAKED` bit (8) for deposited registrations. Supersedes "Phase 2" of
+  fix-monitor-stake-ranking (stake-only ranking). The attestation still requires a deposited stake.
+- **D30**: `require_identity_proof` stays the way to require the node identity for ranking.
+- **D33/D34**: a second, mainnet instance (`csr-network-monitor@mainnet`) on pswsl with its own key; its URL
+  and public key ship in the runner's `config/networks/mainnet.toml`.
+- **D36**: Phase 2 gate defaults `gate_min_days = 120`, `gate_min_runners = 20`; diversity limits unchanged.
