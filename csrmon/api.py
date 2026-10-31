@@ -462,8 +462,14 @@ class Api:
             score = item["score"]
             metrics = {k: round(item[k], 4) for k in ("a30", "s30", "f30", "t")}
             metrics["age_days"] = item["age_days"]
+        # The node's own map cell (the same 2-degree cell /v1/locations counts it in), so the runner
+        # dashboard can mark its own dot. Same rule as _build_locations: no cell without a country.
+        location = None
+        if r is not None and r.get("loc_lat") is not None and r.get("loc_lon") is not None \
+                and r.get("country") not in (None, "", "??"):
+            location = {"lat": int(r["loc_lat"]), "lon": int(r["loc_lon"])}
         return {"peer_id": peer_id, "rank": None if item is None else item.get("rank"),
-                "score": score, "metrics": metrics,
+                "score": score, "metrics": metrics, "location": location,
                 "of": sum(1 for i in ranking if i.get("rank") is not None),
                 "provisional": bool(item and item.get("provisional")),
                 "availability": avail, "check_type": check_type,

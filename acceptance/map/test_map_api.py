@@ -76,6 +76,18 @@ def test_locations(env):
     }
 
 
+
+def test_node_location(env):
+    """/v1/nodes/{peer} carries the node's own map cell, so the runner dashboard can mark its dot (Oct 2026)."""
+    add(env, 1, country="DE", loc=(53, 13))
+    add(env, 2, country="JP")                       # country known, no location
+    add(env, 3, country="??", loc=(1, 1))           # unknown country: never located
+    assert call(env, "GET", "/v1/nodes/Qm1")[2]["location"] == {"lat": 53, "lon": 13}
+    assert call(env, "GET", "/v1/nodes/Qm2")[2]["location"] is None
+    assert call(env, "GET", "/v1/nodes/Qm3")[2]["location"] is None
+    cells = [(l["lat"], l["lon"]) for l in call(env, "GET", "/v1/locations")[2]["locations"]]
+    assert (53, 13) in cells
+
 def test_locations_empty_and_methods(env):
     status, _, body = call(env, "GET", "/v1/locations")
     assert status == 200
