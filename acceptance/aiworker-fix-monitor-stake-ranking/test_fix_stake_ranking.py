@@ -1,5 +1,5 @@
-"""fix-monitor-stake-ranking, phase 2: only runners with a deposited registry stake are ranked
-(F-MON-001, F-MON-002, F-MON-003)."""
+"""fix-monitor-stake-ranking, phase 2 (F-MON-001..003), adapted to D29: every runner is ranked, the stake
+stays visible as stake_status and as FLAG_STAKED in the epoch leaves."""
 import json
 import sqlite3
 
@@ -95,7 +95,8 @@ def test_stake_required_follows_the_registry_config(env, tmp_path):
     assert scoring.stake_required(make_env(sub, registry=False)["c"]) is False
 
 
-def test_only_deposited_registrations_are_ranked(env):
+def test_every_registration_state_is_ranked_d29(env):
+    """D29 replaced the stake-only ranking: every state is ranked, the state stays visible."""
     for n, peer in enumerate(("QmA", "QmB", "QmC", "QmD", "QmE", "QmF"), 1):
         add_runner(env, n, peer)
     set_registry(env, [("QmA", 1, stake_op(0xa1), "deposited", 10_000, None),
@@ -105,16 +106,15 @@ def test_only_deposited_registrations_are_ranked(env):
                        ("QmF", 16, stake_op(0xa6), "deposited", 10_000, None)])   # another service key
     items = {i["runner_id"]: i for i in get(env, "/v1/testnet/runners")["items"]}
     assert len(items) == 6
-    assert items[rid(1)]["rank"] == 1 and items[rid(1)]["stake_status"] == "deposited"
-    want = {2: "withdrawn", 3: "none", 4: "invalid", 5: "duplicate", 6: "none"}
+    want = {1: "deposited", 2: "withdrawn", 3: "none", 4: "invalid", 5: "duplicate", 6: "none"}
     for n, s in want.items():
-        assert items[rid(n)]["rank"] is None, n
+        assert items[rid(n)]["rank"] is not None, n
         assert items[rid(n)]["stake_status"] == s, n
         assert items[rid(n)]["status"] == "active", n          # the runner row itself is not changed
-    assert get(env, "/v1/testnet/summary")["runner_count"] == 1
+    assert get(env, "/v1/testnet/summary")["runner_count"] == 6
 
 
-def test_withdrawal_or_destroyed_cell_removes_the_rank_at_the_next_scan(env):
+def test_withdrawal_or_destroyed_cell_changes_only_the_stake_status(env):
     add_runner(env, 1, "QmA")
     add_runner(env, 2, "QmB")
     set_registry(env, [("QmA", 1, stake_op(0xa1), "deposited", 10_000, None),
@@ -124,13 +124,12 @@ def test_withdrawal_or_destroyed_cell_removes_the_rank_at_the_next_scan(env):
     set_registry(env, [("QmA", 1, stake_op(0xa1), "deposited", 10_000, None),
                        ("QmB", 2, stake_op(0xa2), "withdrawn", None, "spent")])
     r = ranking(env)
-    assert r[rid(1)]["rank"] == 1
-    assert r[rid(2)]["rank"] is None and r[rid(2)]["stake_status"] == "withdrawn"
+    assert r[rid(2)]["rank"] is not None and r[rid(2)]["stake_status"] == "withdrawn"
     assert env["st"].get_runner(rid(2))["status"] == "active"
     set_registry(env, [])                                     # both registry cells destroyed
     r = ranking(env)
     assert len(r) == 2
-    assert all(i["rank"] is None for i in r.values())
+    assert all(i["rank"] is not None for i in r.values())
     assert {i["stake_status"] for i in r.values()} == {"none"}
 
 
@@ -144,7 +143,7 @@ def test_without_registry_config_everybody_is_ranked_as_before(tmp_path):
     assert get(env, "/v1/testnet/summary")["runner_count"] == 2
 
 
-def test_epoch_leaves_only_for_deposited_registrations(env):
+def test_epoch_leaves_for_every_runner_staked_flag_d29(env):
     st = env["st"]
     add_runner(env, 1, "QmA")
     add_runner(env, 2, "QmB")
@@ -157,5 +156,8 @@ def test_epoch_leaves_only_for_deposited_registrations(env):
     built = epochs.build_pending(st, FakeChain(tip=12_000_000), MON, env["c"], now=NOW)
     assert n in built
     summary = st.get_epoch(n)["summary"]
-    assert [l["runner_id"] for l in summary["leaves"]] == [rid(1)]
-    assert summary["runner_count"] == 1
+    leaves = {l["runner_id"]: l for l in summary["leaves"]}
+    assert set(leaves) == {rid(1), rid(2), rid(3)}
+    assert summary["runner_count"] == 3
+    assert leaves[rid(1)]["flags"] & epochs.FLAG_STAKED
+    assert not leaves[rid(2)]["flags"] & epochs.FLAG_STAKED

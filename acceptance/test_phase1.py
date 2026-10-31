@@ -201,8 +201,8 @@ def test_config_minimal_defaults(tmp_path):
     assert c.p2p_interval_s == 86400
     assert c.rate_limit_per_min == 60
     assert c.trusted_proxies == ["127.0.0.1", "::1"]
-    assert c.gate_min_days == 365
-    assert c.gate_min_runners == 60
+    assert c.gate_min_days == 120
+    assert c.gate_min_runners == 20
     assert c.gate_max_asn_share == 0.25
     assert c.gate_max_country_share == 0.5
     assert c.provisional_days == 7

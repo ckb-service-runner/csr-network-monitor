@@ -9,6 +9,7 @@ EPOCH_SECONDS = 604800
 FLAG_PROVISIONAL = 1
 FLAG_IDENTITY_MISMATCH = 2
 FLAG_BAD_BINDING = 4
+FLAG_STAKED = 8          # D29: the runner has a deposited registry stake (apps pick job runners by it)
 SCORE_FORMULA_V1 = 1
 LEAF_SIZE = 47
 UNSIGNED_SIZE = 94
@@ -190,8 +191,7 @@ def build_epoch(store, chain, secret, config, n, *, now):
                                     scoring.stake_required(config),
                                     require_identity=getattr(config, "require_identity_proof", False),
                                     now=end - 1)
-    items = sorted((i for i in ranking if i["first_seen"] < end
-                    and (not scoring.stake_required(config) or i["stake_status"] == "deposited")),
+    items = sorted((i for i in ranking if i["first_seen"] < end),
                    key=lambda i: from_hex(i["runner_id"]))
     leaves = []
     for i in items:
@@ -202,6 +202,8 @@ def build_epoch(store, chain, secret, config, n, *, now):
             flags |= FLAG_IDENTITY_MISMATCH
         if "bad_binding" in i["flags"]:
             flags |= FLAG_BAD_BINDING
+        if i["stake_status"] == "deposited":
+            flags |= FLAG_STAKED
         leaves.append(encode_leaf(i["runner_id"], score=i["score"], a30=i["a30"],
                                   a365=i["a365"], f30=i["f30"], country=i["country"],
                                   asn=i["asn"], flags=flags))
