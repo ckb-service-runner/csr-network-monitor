@@ -38,7 +38,8 @@ def monitor_lock(secret=MON):
 
 CONFIG_TYPE = {"code_hash": CONFIG_CODE, "hash_type": "data2", "args": CONFIG_ARGS}     # csr-config-type
 CONFIG_TYPE_HASH = molecule.script_hash(CONFIG_TYPE)
-REGISTRY_TYPE = {"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": CONFIG_TYPE_HASH}
+# Integration (Oct 2026): the registry args are the config_id (= CONFIG_ARGS), as in CSR spec/registry.md §2.
+REGISTRY_TYPE = {"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": CONFIG_ARGS}
 REGISTRY_TYPE_HASH = molecule.script_hash(REGISTRY_TYPE)
 
 
@@ -72,7 +73,7 @@ def test_config_type_helpers(env):
     assert configcell.config_type_script(CONFIG_ARGS, CONFIG_CODE) == CONFIG_TYPE
     assert configcell.config_type_hash(CONFIG_ARGS, CONFIG_CODE) == CONFIG_TYPE_HASH
     assert configcell.config_hash_of(env["c"]) == CONFIG_TYPE_HASH
-    assert configcell.registry_type_hash(REGISTRY_CODE, "data2", CONFIG_TYPE_HASH) == REGISTRY_TYPE_HASH
+    assert configcell.registry_type_hash(REGISTRY_CODE, "data2", CONFIG_ARGS) == REGISTRY_TYPE_HASH
     assert configcell.registry_hash_of(env["c"]) == REGISTRY_TYPE_HASH
 
 
@@ -145,7 +146,7 @@ def test_scan_registry(env):
         registry_cell("QmB", 2, signer=sk(9), tx_byte=3),                   # another monitor
         registry_cell("QmC", 3, network_id=0, tx_byte=4),                   # mainnet entry
         registry_cell("QmD", 4, att_peer="QmOther", tx_byte=5),             # attestation for another peer
-        cell({"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": CONFIG_TYPE_HASH}, "0x0102",
+        cell({"code_hash": REGISTRY_CODE, "hash_type": "data2", "args": CONFIG_ARGS}, "0x0102",
              "0x" + "06" * 32, 0),                                           # not a registry
         registry_cell("QmE", 5, tx_byte=7),
     ]

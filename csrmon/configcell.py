@@ -48,16 +48,17 @@ def config_hash_of(config):
     return molecule.script_hash(config_script_of(config)) if configured(config) else None
 
 
-def registry_type_hash(code_hash, hash_type, config_type_args) -> str:
-    """Type hash of `{code_hash, hash_type, args}`: the `csr-registry` type script, whose args
-    is the config cell's type hash (passed here as `config_type_args`)."""
+def registry_type_hash(code_hash, hash_type, config_id) -> str:
+    """Type hash of `{code_hash, hash_type, args}`: the `csr-registry` type script, whose args are
+    the `config_id` (contracts v3): the args of the config cell's `csr-config-type`, i.e.
+    `config_type_args` (CSR `spec/registry.md` §2)."""
     return molecule.script_hash({"code_hash": code_hash, "hash_type": hash_type,
-                                 "args": config_type_args})
+                                 "args": config_id})
 
 
 def registry_script_of(config):
     return {"code_hash": config.csr_registry_code_hash, "hash_type": config.csr_registry_hash_type,
-            "args": config_hash_of(config)}
+            "args": config.config_type_args}
 
 
 def registry_hash_of(config):
@@ -65,7 +66,7 @@ def registry_hash_of(config):
     if not configured(config) or not config.csr_registry_code_hash:
         return None
     return registry_type_hash(config.csr_registry_code_hash, config.csr_registry_hash_type,
-                              config_hash_of(config))
+                              config.config_type_args)
 
 
 class ConfigCellWriter:

@@ -20,7 +20,8 @@ def config_type(args):
 
 
 def registry_type(code, args):
-    return {"code_hash": code, "hash_type": "data2", "args": configcell.config_type_hash(args, CONFIG_CODE)}
+    # Integration (Oct 2026): the registry's args are the config_id (CSR spec/registry.md §2).
+    return {"code_hash": code, "hash_type": "data2", "args": args}
 
 
 def registry_v3_data(signer, *, peer, service_pubkey, stake, expiry_ms, type_hash, network_id=1,
