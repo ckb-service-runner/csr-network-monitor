@@ -64,7 +64,8 @@ attest_cache_s = 3600          # re-issue the same attestation within this time
 
 # --- node identity and the daily P2P check through this monitor's own node (docs/INSTALL.md) ---
 # p2p_public_address = "/ip4/203.0.113.7/tcp/8115/p2p/QmMonitorNodeId..."
-require_identity_proof = false
+require_identity_proof = false   # true once (nearly) all ranked runners send identity proofs
+require_checkin_sig = false      # true once every runner sends signed (v1.1) check-ins (CSR 0.2.0 and later)
 p2p_interval_s = 86400
 
 # --- API ---

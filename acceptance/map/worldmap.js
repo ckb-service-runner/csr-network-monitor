@@ -193,11 +193,11 @@
     return { x: round1(lon + 180), y: round1(TOP - lat) };
   }
 
-  // Dot radius in viewBox units: 2.5 for the smallest, 6 for the largest count.
+  // Dot radius in viewBox units: 1.5 for the smallest, 3.6 for the largest count (60 % of the first size).
   function radius(count, max) {
     if (!(count > 0)) return 0;
     var m = Math.max(1, max || 0, count);
-    return round1(2.5 + 3.5 * Math.sqrt(count / m));
+    return round1(1.5 + 2.1 * Math.sqrt(count / m));
   }
 
   function deg(v, pos, neg) {
