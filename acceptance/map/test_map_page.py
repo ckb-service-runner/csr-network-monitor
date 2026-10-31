@@ -24,8 +24,8 @@ def read(name):
 
 def test_index_loads_map_script_first():
     html = read("index.html")
-    m1 = re.search(r'<script src="/static/worldmap\.js"></script>', html)
-    m2 = re.search(r'<script[^>]+type="module"[^>]+src="/static/app\.mjs"', html)
+    m1 = re.search(r'<script src="(/)?static/worldmap\.js"></script>', html)
+    m2 = re.search(r'<script[^>]+type="module"[^>]+src="(/)?static/app\.mjs"', html)
     assert m1 and m2 and m1.start() < m2.start()
     for i in ("map", "map-info", "map-credit", "other"):
         assert re.search(rf'id="{i}"', html), i
@@ -35,7 +35,7 @@ def test_index_loads_map_script_first():
 
 def test_app_uses_map():
     app = read("app.mjs")
-    assert "/v1/locations" in app
+    assert "v1/locations" in app
     assert "CSRWorldMap" in app and ".svg(" in app
     assert "countryLabel" in app and "countryList" in app
     assert "map-info" in app

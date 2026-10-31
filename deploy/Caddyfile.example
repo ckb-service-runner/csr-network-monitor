@@ -1,20 +1,28 @@
-# One hostname per network: CSR's endpoints carry no network in the path.
-monitor-testnet.example.org {
+# One hostname, one path per network (D40). Each network is its own monitor process.
+# DNS: an A record to the public IP, "DNS only" (no CDN proxy: the monitor needs the runners' real IPs).
+csr-monitor.example.org {
 	encode gzip
 	header {
 		Content-Security-Policy "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 	}
-	reverse_proxy 127.0.0.1:8480
+	# the web page uses relative paths, so the trailing slash matters
+	redir /testnet /testnet/ 308
+	redir /mainnet /mainnet/ 308
+	handle_path /testnet/* {
+		reverse_proxy 127.0.0.1:8480
+	}
+	handle_path /mainnet/* {
+		reverse_proxy 127.0.0.1:8481
+	}
+	handle {
+		redir * /mainnet/ 302
+	}
 }
 
-monitor.example.org {
-	encode gzip
-	header {
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-	}
-	reverse_proxy 127.0.0.1:8481
-}
+# Alternative: one hostname per network.
+# monitor-testnet.example.org {
+# 	encode gzip
+# 	reverse_proxy 127.0.0.1:8480
+# }
