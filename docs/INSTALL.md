@@ -147,6 +147,8 @@ Every clock update takes `clock_update_fee_shannons` from the config cell. `GET 
 2. Take the `blake160` printed by `keygen`, build the address with the sighash lock and send enough CKB (more than `stat_cell_capacity_ckb` plus fees) to it.
 3. Set `stat_cell_enabled = true`, restart. Each hour the monitor builds finished weekly epochs and publishes each one that has no transaction yet (first one creates the stat cell with a Type ID, later ones update it). The type hash appears in `/v1/monitor`.
 
+The stat cell needs no CSR contracts: it uses the standard anyone-can-pay lock and a Type ID, so it also works on a network without registry keys (mainnet before 1.x, D41). Without the registry no leaf carries `FLAG_STAKED`.
+
 ## Forwarded topology (fixed-IP VPS in front of the monitor host)
 
 The monitor host may sit behind NAT. A VPS with a fixed IP forwards port 443 and the CKB P2P port through WireGuard. There must be **no SNAT / masquerade** on the VPS, so the monitor still sees runner source IPs (needed for geolocation and the P2P check), and replies on the monitor host must return through the tunnel.

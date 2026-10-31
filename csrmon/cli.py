@@ -53,11 +53,12 @@ def main(argv=None) -> int:
         if cmd == "check-config":
             for w in config_warnings(config):
                 print(f"warning: {w}", file=sys.stderr)
+            # D41: since D29 the epoch leaves hold every ranked runner and mark staked ones with
+            # FLAG_STAKED, so a stat cell is meaningful without the registry (e.g. mainnet before 1.x).
             if config.stat_cell_enabled and (not config.csr_registry_code_hash
                                              or not config.config_type_args):
-                print("config error: stat_cell_enabled needs csr_registry_code_hash and"
-                      " config_type_args", file=sys.stderr)
-                return 2
+                print("warning: stat cell without registry: no epoch leaf carries FLAG_STAKED",
+                      file=sys.stderr)
             print("ok")
         elif cmd == "keygen":
             print(_key_info(keys.load_or_create_secret(config.key_path)))

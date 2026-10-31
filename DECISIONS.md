@@ -138,7 +138,7 @@ Phase 1 (F-SEC-005/006/007/012/013/014/017, F-MON-015/016).
 ## mon-ops-robustness
 - Unknown epoch ids that are not ASCII digits give 404 `not_found`; digit ids that do not exist stay 404 `unknown_epoch`. `/v1/.../history` with `from`/`to` outside 0..now+1 day gives 400 `bad_request` (the older `bad_range` stays for inverted or over-long ranges).
 - `/v1/network` and `/v1/locations` use a generic `_cached` helper (30 s, cleared by `invalidate()`); `nodes_reachable` comes from `Store.reachable_count`.
-- `check-config` writes warnings to stderr and still prints `ok`; with `stat_cell_enabled` and no registry keys it prints a config error and exits 2.
+- `check-config` writes warnings to stderr and still prints `ok`; with `stat_cell_enabled` and no registry keys it prints a config error and exits 2 (a warning since D41).
 - The example testnet config now sets `config_type_args` and `csr_registry_code_hash` (A8) uncommented.
 - `TipCrossCheck.status` is `ok`/`diverged`/`unknown`/`off`; `Api` gets it through the new optional `cross` argument. A failing local node still pauses probing.
 - Clock status: meta `clock_ms` is set by `read_clock` and `update_clock` (also when no update was needed); `config_cell_spare_shannons` is kept in meta and shown as `config_cell_spare_ckb`. The 30-day warning is logged whenever the config cell is read.
@@ -225,3 +225,11 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
 - The web page uses relative paths (`static/…`, `v1/…`) so it works under a prefix and at the root. Changed tests:
   `test_phase9.py` and `map/test_map_page.py` accept relative paths. New: `acceptance/aiworker-monitor-path-prefix/`.
 - DNS "only" (no CDN proxy): the monitor must see the runners' real IPs for country and ASN.
+
+## D41 – stat cell without the registry (31 Oct 2026)
+
+- The weekly ranking may be published on chain (stat cell) by a monitor without registry keys, e.g. on mainnet before
+  1.x. The `check-config` error "stat_cell_enabled needs csr_registry_code_hash and config_type_args" (mon-ops-robustness)
+  dated from the stake-only ranking; since D29 the leaves hold every ranked runner and mark staked ones with
+  `FLAG_STAKED`, so it is now a warning ("no epoch leaf carries FLAG_STAKED"). The stat cell's own keys stay required.
+  The daemon never enforced the old rule. New: `acceptance/aiworker-stat-cell-without-registry/`.
