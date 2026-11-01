@@ -35,6 +35,8 @@ def test_files_exist_and_small():
 def test_no_external_urls():
     for f in FILES:
         text = open(os.path.join(WEB, f), encoding="utf-8").read()
+        # outbound links to the project's GitHub org load nothing; allow them only in <a href>
+        text = re.sub(r'<a href="https://github\.com/ckb-service-runner/[\w.-]+"', "<a", text)
         assert not re.search(r"https?://", text), f
         assert "//cdn" not in text and "@import" not in text, f
 

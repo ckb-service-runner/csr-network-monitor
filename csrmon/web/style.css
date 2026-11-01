@@ -23,3 +23,5 @@ h2 { font-size: 1.15rem; margin: 1.5em 0 .5em; }
 table { border-collapse: collapse; width: 100%; font-size: .9rem; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { color: var(--muted); font-weight: 600; }
+a { color: var(--accent); }
+.site-footer { margin-top: 2em; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; text-align: center; }
