@@ -6,3 +6,5 @@ __pycache__/
 *.db-shm
 *.key
 *.salt
+*.egg-info/
+build/
