@@ -233,3 +233,10 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
   dated from the stake-only ranking; since D29 the leaves hold every ranked runner and mark staked ones with
   `FLAG_STAKED`, so it is now a warning ("no epoch leaf carries FLAG_STAKED"). The stat cell's own keys stay required.
   The daemon never enforced the old rule. New: `acceptance/aiworker-stat-cell-without-registry/`.
+
+## D42 – GitHub links in the page footer (1 Nov 2026)
+
+- The page has a footer linking to the GitHub organisation `https://github.com/ckb-service-runner/`.
+- The no-external-URL rule stays: the page loads nothing from outside. Plain `<a href>` links to
+  the `ckb-service-runner` GitHub organisation (or one of its repos) are the only exception, since following a link loads nothing into the
+  page. Changed tests: `test_phase9.py` and `map/test_map_page.py`.

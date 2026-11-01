@@ -1,0 +1,2 @@
+[console_scripts]
+csrmon = csrmon.cli:main
