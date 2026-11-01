@@ -236,7 +236,7 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
 
 ## D42 – GitHub links in the page footer (1 Nov 2026)
 
-- The page has a footer linking to the runner repo ("Run a CSR node") and to this repo ("Monitor source on GitHub").
+- The page has a footer linking to the GitHub organisation `https://github.com/ckb-service-runner/`.
 - The no-external-URL rule stays: the page loads nothing from outside. Plain `<a href>` links to
-  `https://github.com/ckb-service-runner/<repo>` are the only exception, since following a link loads nothing into the
+  the `ckb-service-runner` GitHub organisation (or one of its repos) are the only exception, since following a link loads nothing into the
   page. Changed tests: `test_phase9.py` and `map/test_map_page.py`.

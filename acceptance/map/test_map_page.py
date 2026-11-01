@@ -64,7 +64,7 @@ def test_web_budget_and_no_urls():
         total += os.path.getsize(p)
         text = open(p, encoding="utf-8").read()
         # outbound links to the project's GitHub org load nothing; allow them only in <a href>
-        text = re.sub(r'<a href="https://github\.com/ckb-service-runner/[\w.-]+"', "<a", text)
+        text = re.sub(r'<a href="https://github\.com/ckb-service-runner/(?:[\w.-]+)?"', "<a", text)
         assert not re.search(r"https?://", text), name
         assert "//cdn" not in text and "@import" not in text, name
     assert total < 200_000, total
