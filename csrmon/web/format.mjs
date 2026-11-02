@@ -10,6 +10,7 @@ export function formatScore(s) {
 }
 
 export function statusLabel(item) {
+  if (item.unranked_reason === "inactive") return "inactive";
   if (item.provisional) return "provisional";
   const flags = item.flags || [];
   if (flags.includes("identity_mismatch") || flags.includes("bad_binding")) return "excluded";

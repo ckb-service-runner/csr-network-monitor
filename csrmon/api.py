@@ -20,7 +20,8 @@ MAX_BODY = 16384
 CACHE_TTL_S = 30
 P2P_VERIFIED_S = 48 * 3600
 _RANK_KEYS = ("runner_id", "rank", "score", "provisional", "status", "flags", "a7", "a30",
-              "a365", "country", "region", "asn", "asn_peers", "stake_status")
+              "a365", "country", "region", "asn", "asn_peers", "stake_status", "unranked_reason",
+              "last_seen")
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _STATIC_TYPES = {".html": "text/html; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
                  ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -102,7 +103,8 @@ class Api:
                 return hit[1]
         ranking = scoring.rank_runners(self.store, today, self.config.provisional_days,
                                         scoring.stake_required(self.config),
-                                        require_identity=self.config.require_identity_proof, now=now)
+                                        require_identity=self.config.require_identity_proof, now=now,
+                                        **scoring.activity_days(self.config))
         summary = scoring.network_summary(self.store, today, self.config, ranking)
         with self._lock:
             self._cache[key] = (now, ranking)
@@ -398,9 +400,15 @@ class Api:
     def _locations(self):
         return self._cached("locations", self._build_locations)
 
+    def _listed(self, now):
+        """The runners the network totals and the map count: active, not hidden (D45), one per peer
+        ID (D46). Inactive runners still count until they are hidden."""
+        return [r for r, _ in scoring.visible_runners(self.store, now,
+                                                      **scoring.activity_days(self.config))]
+
     def _build_network(self):
         now = self.clock()
-        runners = self.store.list_runners()
+        runners = self._listed(now)
         reachable = self.store.reachable_count(now - self.config.reachable_window_s)
         counts = {}
         for r in runners:
@@ -413,7 +421,7 @@ class Api:
                 "countries": countries, "updated_at": int(now)}
 
     def _build_locations(self):
-        runners = self.store.list_runners()
+        runners = self._listed(self.clock())
         cells = {}
         located = 0
         for r in runners:
@@ -428,7 +436,11 @@ class Api:
                 "grid_deg": geo.GRID_DEG, "updated_at": int(self.clock())}
 
     def _node(self, peer_id, today):
-        r = self.store.find_runner_by_peer(peer_id)
+        # D46: the peer's primary runner (the one in the ranking); a peer whose runners are all hidden
+        # still gets its newest runner, unranked.
+        r = next((x for x in self._listed(self.clock()) if x["peer_id"] == peer_id), None)
+        if r is None:
+            r = self.store.find_runner_by_peer(peer_id)
         st = self.store.stake_for(peer_id)
         if r is None and st is None:
             raise _err(404, "unknown_node")

@@ -240,3 +240,26 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
 - The no-external-URL rule stays: the page loads nothing from outside. Plain `<a href>` links to
   the `ckb-service-runner` GitHub organisation (or one of its repos) are the only exception, since following a link loads nothing into the
   page. Changed tests: `test_phase9.py` and `map/test_map_page.py`.
+
+## D45 – inactive and hidden runners (2 Nov 2026)
+
+- Before, a runner never left the monitor: a decommissioned node kept a (low) rank and counted in the totals, the
+  epoch leaves and the Phase 2 gate, which could open the gate with few live nodes.
+- New config keys `inactive_after_days` (default 3) and `hidden_after_days` (default 30, must be >= the first).
+  Activity = the last ok probe (`runners.last_seen`) or the last day whose `daily_stats` count an ok probe.
+- **Inactive:** listed with `unranked_reason = "inactive"` (before `provisional`), no rank, not in `runner_count`,
+  the gate or the epoch leaves; still in `nodes_total` and `/v1/locations`. The page greys the row out and the
+  summary line shows the count (`inactive_count`).
+- **Hidden:** left out of the ranking, `/v1/network` and `/v1/locations`; the database keeps everything.
+- No status is written: both states follow from the data, so the next ok probe brings the runner straight back.
+- Ranking items gain `unranked_reason` and `last_seen`. Changed test: `test_phase8.py::test_runners_paging` (item keys).
+
+## D46 – one runner per node (2 Nov 2026)
+
+- Found on 2 Nov 2026: a node directory copied to a second PC gave three runners with one peer ID on mainnet.
+  The identity proof flags the other runners of a peer (`identity_mismatch`), but they stayed listed and counted.
+- Several runners with the same peer ID count as one node. The primary is a live runner before an inactive one,
+  then one without an identity flag, then the oldest (`first_seen`, so a later runner cannot displace an
+  established one). The other runners are left out like hidden ones and come back if they become the primary.
+- `nodes_reachable` counts distinct peer IDs; `/v1/nodes/{peer_id}` answers with the primary.
+- New tests (D45, D46): `acceptance/test_inactive_and_one_per_peer.py`.

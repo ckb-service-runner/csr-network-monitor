@@ -48,6 +48,11 @@ class Config:
     gate_max_asn_share: float = 0.25
     gate_max_country_share: float = 0.5
     provisional_days: int = 7
+    # D45: a runner without an ok probe for this many days is inactive (not ranked, not in the gate,
+    # the runner count or the epoch leaves; still listed), and after hidden_after_days it is left out
+    # of every list and total. The next ok probe brings it back. History stays in the database.
+    inactive_after_days: int = 3
+    hidden_after_days: int = 30
     probe_retention_days: int = 90
     stat_cell_enabled: bool = False
     stat_cell_capacity_ckb: int = 400
@@ -92,6 +97,7 @@ _MIN = {
     "rate_limit_per_min": 1, "rate_limit_post_per_min": 1, "http_timeout_s": 1,
     "http_max_connections": 1, "gate_min_days": 1, "gate_min_runners": 1,
     "provisional_days": 0, "probe_retention_days": 1,
+    "inactive_after_days": 1, "hidden_after_days": 1,
     "ping_port": 1, "discovery_interval_s": 1, "discovery_backoff_s": 1,
     "answer_deadline_s": 1, "reachable_window_s": 1, "clock_update_interval_s": 1,
     "attest_validity_days": 1, "attest_min_ok_24h": 1, "attest_cache_s": 1,
@@ -178,6 +184,8 @@ def load_config(path) -> Config:
             raise ConfigError(f"{k!r} must be one of {_HASH_TYPES}")
     if cfg.stat_cell_acp_dep_type not in ("code", "dep_group"):
         raise ConfigError("'stat_cell_acp_dep_type' must be 'code' or 'dep_group'")
+    if cfg.hidden_after_days < cfg.inactive_after_days:
+        raise ConfigError("'hidden_after_days' must be >= 'inactive_after_days'")
     for k in ("gate_max_asn_share", "gate_max_country_share"):
         if not 0 <= getattr(cfg, k) <= 1:
             raise ConfigError(f"{k!r} must be between 0 and 1")
