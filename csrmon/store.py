@@ -435,6 +435,12 @@ class Store:
                     (rid, day) + vals)
             return len(ids)
 
+    def last_ok_days(self) -> dict:
+        """{runner_id: latest day (YYYY-MM-DD) whose daily stats count at least one ok probe}."""
+        rows = self._all("select runner_id, max(day) d from daily_stats where probes_ok>0"
+                         " group by runner_id")
+        return {r["runner_id"]: r["d"] for r in rows}
+
     def daily_stats(self, runner_id, from_day, to_day):
         rows = self._all("select * from daily_stats where runner_id=? and day>=? and day<=?"
                          " order by day", (runner_id, from_day, to_day))
@@ -497,8 +503,9 @@ class Store:
             self._con.execute("update epochs set superseded=1 where epoch=?", (epoch,))
 
     def reachable_count(self, since):
-        """Number of active runners with at least one ok probe at or after `since`."""
-        r = self._one("select count(distinct p.runner_id) n from probes p join runners r"
+        """Number of nodes (distinct peer IDs, D46) with an active runner that had at least one ok
+        probe at or after `since`."""
+        r = self._one("select count(distinct r.peer_id) n from probes p join runners r"
                       " on r.runner_id=p.runner_id where r.status='active' and p.result='ok'"
                       " and p.ts>=?", (since,))
         return r["n"]

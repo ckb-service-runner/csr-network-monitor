@@ -78,6 +78,10 @@ gate_min_runners = 20
 gate_max_asn_share = 0.25
 gate_max_country_share = 0.5
 provisional_days = 7
+# D45: no ok probe for this many days -> inactive (listed, not ranked, not in runner_count / gate / epoch
+# leaves); after hidden_after_days -> left out of every list and total. The next ok probe brings it back.
+inactive_after_days = 3
+hidden_after_days = 30
 probe_retention_days = 90
 
 # --- stat cell (weekly signed summary on chain) ---

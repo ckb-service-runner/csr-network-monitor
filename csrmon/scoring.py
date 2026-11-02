@@ -9,6 +9,9 @@ SCORE_FORMULA = "score_v1"
 WEIGHTS = {"a30": 0.45, "a365": 0.15, "s30": 0.15, "f30": 0.15, "t": 0.10}
 _BAD_FLAGS = ("identity_mismatch", "bad_binding")
 IDENTITY_PROOF_MAX_AGE_S = 7 * 86400
+DAY_S = 86400
+INACTIVE_AFTER_DAYS = 3
+HIDDEN_AFTER_DAYS = 30
 
 
 def _days_between(a, b) -> int:
@@ -47,6 +50,12 @@ def runner_metrics(store, runner_id, today, provisional_days=7, runner=None) -> 
     return m
 
 
+def activity_days(config) -> dict:
+    """The D45 thresholds of a config, as keyword arguments for rank_runners / visible_runners."""
+    return {"inactive_after_days": getattr(config, "inactive_after_days", INACTIVE_AFTER_DAYS),
+            "hidden_after_days": getattr(config, "hidden_after_days", HIDDEN_AFTER_DAYS)}
+
+
 def stake_required(config) -> bool:
     return bool(config.csr_registry_code_hash and config.config_type_args)
 
@@ -66,7 +75,55 @@ def identity_ok(runner, *, require, now) -> bool:
     return at is not None and now - at <= IDENTITY_PROOF_MAX_AGE_S
 
 
+def activity(runner, now, inactive_after_days=INACTIVE_AFTER_DAYS,
+             hidden_after_days=HIDDEN_AFTER_DAYS, last_ok_day=None) -> str:
+    """D45: "live", "inactive" or "hidden", from the time since the runner's last ok probe: the later
+    of `last_seen` and the start of the last day whose daily stats count an ok probe (`first_seen`
+    while it never had one). The next ok probe makes it live again."""
+    last = runner.get("last_seen") or 0
+    if last_ok_day:
+        last = max(last, day_start(last_ok_day))
+    if not last:
+        last = runner.get("first_seen") or 0
+    idle = now - last
+    if idle > hidden_after_days * DAY_S:
+        return "hidden"
+    if idle > inactive_after_days * DAY_S:
+        return "inactive"
+    return "live"
+
+
+def _primary_key(entry):
+    r, state = entry
+    flagged = any(f in r["flags"] for f in _BAD_FLAGS)
+    return (state != "live", flagged, r["first_seen"] or 0, r["runner_id"])
+
+
+def visible_runners(store, now, inactive_after_days=INACTIVE_AFTER_DAYS,
+                    hidden_after_days=HIDDEN_AFTER_DAYS) -> list:
+    """The active runners the monitor lists and counts, as (runner, state) pairs sorted by runner ID.
+
+    D45: hidden runners (no ok probe for `hidden_after_days`) are left out.
+    D46: one runner per peer ID (one CKB node is one runner). Among the runners of a peer the primary is
+    the live one before an inactive one, then one without an identity flag (the last identity proof
+    wins, see csrprobe), then the oldest (`first_seen`), so a later runner claiming a known node cannot
+    displace the established one. The others are left out like hidden runners; their data is kept and
+    they come back if they become the primary (e.g. the primary goes inactive)."""
+    by_peer = {}
+    ok_days = store.last_ok_days()
+    for r in store.list_runners(("active",)):
+        state = activity(r, now, inactive_after_days, hidden_after_days, ok_days.get(r["runner_id"]))
+        if state == "hidden":
+            continue
+        by_peer.setdefault(r["peer_id"] or r["runner_id"], []).append((r, state))
+    out = [min(group, key=_primary_key) for group in by_peer.values()]
+    out.sort(key=lambda e: e[0]["runner_id"])
+    return out
+
+
 def unranked_reason(item):
+    if item.get("inactive"):
+        return "inactive"
     if item["provisional"]:
         return "provisional"
     if any(f in item["flags"] for f in _BAD_FLAGS):
@@ -77,13 +134,15 @@ def unranked_reason(item):
 
 
 def rank_runners(store, today, provisional_days=7, require_stake=False, *, require_identity=False,
-                 now=None) -> list:
+                 now=None, inactive_after_days=INACTIVE_AFTER_DAYS,
+                 hidden_after_days=HIDDEN_AFTER_DAYS) -> list:
     if now is None:
         now = day_start(today) + 86400 - 1
     items = []
-    for r in store.list_runners(("active",)):
+    for r, state in visible_runners(store, now, inactive_after_days, hidden_after_days):
         m = runner_metrics(store, r["runner_id"], today, provisional_days, runner=r)
         m.update(runner_id=r["runner_id"], rank=None, status=r["status"], flags=list(r["flags"]),
+                 inactive=state == "inactive", last_seen=r.get("last_seen"),
                  country=r["country"], region=r["region"], asn=r["asn"],
                  first_seen=r["first_seen"], stake_status=_stake_status(store, r),
                  stake_required=require_stake, identity_proven_at=r.get("identity_proven_at"),
@@ -110,9 +169,12 @@ def rank_runners(store, today, provisional_days=7, require_stake=False, *, requi
 
 
 def update_scores(store, today, provisional_days=7, require_stake=False, *, require_identity=False,
-                  now=None) -> list:
+                  now=None, inactive_after_days=INACTIVE_AFTER_DAYS,
+                  hidden_after_days=HIDDEN_AFTER_DAYS) -> list:
     ranking = rank_runners(store, today, provisional_days, require_stake,
-                           require_identity=require_identity, now=now)
+                           require_identity=require_identity, now=now,
+                           inactive_after_days=inactive_after_days,
+                           hidden_after_days=hidden_after_days)
     for i in ranking:
         store.set_daily_score(i["runner_id"], today, i["score"])
     return ranking
@@ -142,10 +204,13 @@ def _largest_share(counts) -> float:
 def network_summary(store, today, config, ranking=None) -> dict:
     if ranking is None:
         ranking = rank_runners(store, today, config.provisional_days, stake_required(config),
-                               require_identity=getattr(config, "require_identity_proof", False))
+                               require_identity=getattr(config, "require_identity_proof", False),
+                               **activity_days(config))
     ranked = [i for i in ranking if i["rank"] is not None]
-    provisional = sum(1 for i in ranking if i["provisional"])
-    excluded = sum(1 for i in ranking if i["rank"] is None and not i["provisional"])
+    inactive = sum(1 for i in ranking if i.get("inactive"))
+    provisional = sum(1 for i in ranking if i["provisional"] and not i.get("inactive"))
+    excluded = sum(1 for i in ranking
+                   if i["rank"] is None and not i["provisional"] and not i.get("inactive"))
     by_country = _count(ranked, "country", "??")
     by_region = _count(ranked, "region", "??")
     by_asn = _count(ranked, "asn", "0")
@@ -162,6 +227,7 @@ def network_summary(store, today, config, ranking=None) -> dict:
     return {
         "network": config.network, "date": today, "score_formula": SCORE_FORMULA,
         "runner_count": n, "provisional_count": provisional, "excluded_count": excluded,
+        "inactive_count": inactive,
         "by_country": by_country, "by_region": by_region, "by_asn": by_asn,
         "largest_asn_share": asn_share, "largest_country_share": country_share,
         "diversity_index": diversity_index(by_asn),

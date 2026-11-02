@@ -190,8 +190,10 @@ def build_epoch(store, chain, secret, config, n, *, now):
     ranking = scoring.rank_runners(store, day_of(end - 1), config.provisional_days,
                                     scoring.stake_required(config),
                                     require_identity=getattr(config, "require_identity_proof", False),
-                                    now=end - 1)
-    items = sorted((i for i in ranking if i["first_seen"] < end),
+                                    now=end - 1, **scoring.activity_days(config))
+    # D45: inactive runners are listed but are not in the epoch leaves (hidden ones and the non-primary
+    # runners of a peer, D46, are not in the ranking at all).
+    items = sorted((i for i in ranking if i["first_seen"] < end and not i.get("inactive")),
                    key=lambda i: from_hex(i["runner_id"]))
     leaves = []
     for i in items:

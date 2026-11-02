@@ -23,7 +23,8 @@ function renderSummary(s) {
   const div = s.diversity_index === null || s.diversity_index === undefined
     ? "–" : Number(s.diversity_index).toFixed(2);
   $("summary").textContent =
-    `${s.runner_count} ranked · ${s.provisional_count} provisional · ASN diversity ${div}`;
+    `${s.runner_count} ranked · ${s.provisional_count} provisional` +
+    (s.inactive_count ? ` · ${s.inactive_count} inactive` : "") + ` · ASN diversity ${div}`;
   $("gate").textContent = "Gate: " + gateText(s.gate);
 }
 
@@ -49,6 +50,10 @@ function renderRanking(items) {
   body.textContent = "";
   for (const it of items) {
     const tr = document.createElement("tr");
+    if (it.unranked_reason === "inactive") {
+      tr.className = "inactive";
+      tr.title = "No successful check for several days";
+    }
     cell(tr, it.rank === null || it.rank === undefined ? "–" : String(it.rank));
     cell(tr, shortId(it.runner_id)).title = it.runner_id;
     cell(tr, formatScore(it.score));
