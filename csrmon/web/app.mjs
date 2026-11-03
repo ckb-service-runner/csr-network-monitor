@@ -162,8 +162,10 @@ function setNetwork(net) {
   $("network-name").textContent = net;
   const other = net === "mainnet" ? "testnet" : "mainnet";
   const sw = $("netswitch");
-  sw.textContent = other[0].toUpperCase() + other.slice(1);
+  // The label names the network shown on this page; the link leads to the other one.
+  sw.textContent = net[0].toUpperCase() + net.slice(1);
   sw.href = `../${other}/`;
+  sw.title = `Switch to ${other}`;
 }
 
 for (const b of document.querySelectorAll(".copy")) {
