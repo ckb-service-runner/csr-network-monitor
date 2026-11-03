@@ -56,15 +56,26 @@ def test_worldmap_served(api):
 
 
 def test_web_budget_and_no_urls():
-    total = 0
+    total = images = 0
     for name in sorted(os.listdir(WEB)):
         p = os.path.join(WEB, name)
         if not os.path.isfile(p):
             continue
+        if name.endswith(".webp"):          # images have their own budget (D47)
+            images += os.path.getsize(p)
+            continue
         total += os.path.getsize(p)
         text = open(p, encoding="utf-8").read()
-        # outbound links to the project's GitHub org load nothing; allow them only in <a href>
-        text = re.sub(r'<a href="https://github\.com/ckb-service-runner/(?:[\w.-]+)?"', "<a", text)
+        # plain <a href> links load nothing; allow the project's GitHub org, its Nervos Talk post and Telegram (D42, D47)
+        text = re.sub(r'<a\b([^>]*?)\shref="https://(?:github\.com/ckb-service-runner/[\w./#-]*|talk\.nervos\.org/t/[\w./-]+|t\.me/ckbrunner)"', "<a", text)
         assert not re.search(r"https?://", text), name
         assert "//cdn" not in text and "@import" not in text, name
     assert total < 200_000, total
+    assert images < 100_000, images
+
+
+def test_images_served(api):
+    for name in ("csr-logo.webp", "csr-dashboard.webp"):
+        status, hdrs, body = api.handle("GET", "/static/" + name, {}, b"", "1.2.3.4")
+        assert status == 200 and hdrs["Content-Type"] == "image/webp", name
+        assert body == open(os.path.join(WEB, name), "rb").read()

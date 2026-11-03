@@ -2,43 +2,258 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>CSR Network Monitor</title>
+<meta name="description" content="CKB Service Runner (CSR) runs beside your CKB full node: a private node dashboard today, a public reputation from day one, and a seat in the revenue layer for CKB nodes.">
+<meta property="og:title" content="CSR Network Monitor">
+<meta property="og:description" content="Run a CKB full node? Put it on the map. Install CKB Service Runner beside your node and join the revenue layer for CKB nodes.">
+<meta property="og:type" content="website">
 <link rel="stylesheet" href="static/style.css">
 <script src="static/worldmap.js"></script>
 <script type="module" src="static/app.mjs"></script>
 </head>
 <body>
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="#top" aria-label="CKB Service Runner, top of page">
+      <img class="brand-mark" src="static/csr-logo.webp" width="32" height="32" alt="">
+      <span>CKB Service Runner <b>(CSR)</b></span>
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#network">Network</a>
+      <a href="#install">Install</a>
+      <a href="#faq">FAQ</a>
+      <a class="netswitch" id="netswitch" href="../testnet/">Testnet</a>
+    </nav>
+  </div>
+</header>
+
+<section id="top" class="mapband" aria-label="CSR runners on a world map">
+  <div class="wrap">
+    <div class="mapbox">
+      <p class="maplabel"><span class="live"></span>CSR runners worldwide · live from the CSR Network Monitor</p>
+      <div id="map" class="map"></div>
+      <p id="map-info" class="muted small">Tap a dot for details.</p>
+      <p id="other" class="muted small"></p>
+      <p id="map-credit" class="credit">Map: Natural Earth · IP geolocation: DB-IP.com (CC BY 4.0) · dots show 2° areas, not exact places</p>
+    </div>
+  </div>
+</section>
+
 <main>
-  <h1>CSR Network Monitor <span id="network-name"></span></h1>
-  <p id="disclaimer" class="disclaimer">This monitor is a reputation source, not a proof: it shows that a runner answers, follows the chain and serves blocks over P2P.</p>
-  <p id="error" class="error" hidden></p>
-  <section>
-    <h2>Summary</h2>
-    <p id="summary">Loading…</p>
-    <p id="gate"></p>
-  </section>
-  <section>
-    <h2>Countries</h2>
-    <div id="map" class="map"></div>
-    <p id="map-info" class="muted">Tap a dot for details.</p>
-    <p id="other" class="muted"></p>
-    <p id="map-credit" class="credit">Map: Natural Earth · IP geolocation: DB-IP.com (CC BY 4.0) · dots show 2° areas, not exact places</p>
-  </section>
-  <section>
-    <h2>Ranking</h2>
-    <div class="table-wrap">
-      <table id="ranking">
-        <thead>
-          <tr><th>#</th><th>Runner</th><th>Score</th><th>30 d</th><th>365 d</th><th>Country</th><th>ASN</th><th>Status</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+  <section class="hero">
+    <div class="wrap hero-in">
+      <div class="hero-copy">
+        <p class="eyebrow">CKB Service Runner · <span id="network-name">mainnet</span></p>
+        <h1>A Revenue Layer <em>for CKB Nodes</em></h1>
+        <p class="lede only-mainnet">CKB Service Runner (CSR) installs next to your node in a few minutes. You get a private dashboard for your node today, a public reputation from the first hour, and a seat in the revenue layer for CKB nodes when the Service Runtime opens on mainnet.</p>
+        <p class="lede only-testnet">On testnet the Service Runtime already runs. Install CSR beside a testnet node, take test jobs, and help shape the revenue layer for CKB nodes before it reaches mainnet.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://talk.nervos.org/t/a-revenue-layer-for-ckb-nodes/10734">Read the idea on Nervos Talk</a>
+        </div>
+      </div>
+
+      <aside class="gate" aria-labelledby="gate-title">
+        <div class="gate-head">
+          <h2 id="gate-title"><span id="gate-min">20</span> runners open the Service Runtime</h2>
+          <span class="chip" id="gate-chip">not met</span>
+        </div>
+        <div class="cells" id="cells" role="img" aria-label="Runners counted toward the gate"></div>
+        <p class="cells-legend">
+          <span><i class="sw on"></i><b id="n-ranked">0</b> ranked</span>
+          <span><i class="sw prov"></i><b id="n-prov">0</b> provisional</span>
+          <span><i class="sw open"></i><b id="n-open">20</b> seats open</span>
+        </p>
+        <dl class="meters">
+          <div class="meter">
+            <dt>History</dt>
+            <dd><span class="bar"><span class="fill" id="m-days"></span></span><span class="val" id="v-days">–</span></dd>
+          </div>
+          <div class="meter">
+            <dt>Largest ASN share</dt>
+            <dd><span class="bar"><span class="fill" id="m-asn"></span><span class="limit" id="l-asn"></span></span><span class="val" id="v-asn">–</span></dd>
+          </div>
+          <div class="meter">
+            <dt>Largest country share</dt>
+            <dd><span class="bar"><span class="fill" id="m-cc"></span><span class="limit" id="l-cc"></span></span><span class="val" id="v-cc">–</span></dd>
+          </div>
+        </dl>
+        <p class="gate-foot"><span id="gate">Gate: loading…</span><span class="tip">tip <b id="tip">–</b></span></p>
+      </aside>
     </div>
   </section>
-  <footer class="site-footer">
-    <a href="https://github.com/ckb-service-runner/" target="_blank" rel="noopener">CKB Service Runner on GitHub</a>
-  </footer>
+
+  <p id="error" class="error wrap" hidden></p>
+  <p id="snapshot-note" class="snapshot wrap" hidden></p>
+
+  <section class="band" aria-labelledby="why-title">
+    <div class="wrap">
+      <h2 id="why-title" class="h2">What you get</h2>
+      <div class="why">
+        <article>
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="5" width="26" height="18" rx="3"/><path d="M8 18l5-5 4 3 7-7M11 27h10"/></svg>
+          <h3>A dashboard for your node</h3>
+          <p>Sync state, tip, peers, CPU, memory and disk on one page. It runs on your own machine at <code>127.0.0.1</code> and is never opened to the internet.</p>
+        </article>
+        <article>
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3l11 4v8c0 7-5 12-11 14C10 27 5 22 5 15V7z"/><path d="M11 16l3.5 3.5L21 13"/></svg>
+          <h3>Proof that it is a real full node</h3>
+          <p>CSR proves your node's identity with its own P2P key. The monitor sends a signed challenge every 10 minutes and fetches blocks over P2P, so the ranking only counts nodes that hold the chain.</p>
+        </article>
+        <article>
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="4" width="10" height="10" rx="2"/><rect x="18" y="4" width="10" height="10" rx="2"/><rect x="4" y="18" width="10" height="10" rx="2"/><path d="M23 18v10M18 23h10"/></svg>
+          <h3>A seat in the revenue layer</h3>
+          <p>Earn money by providing useful services for CKB Dapps, such as monitoring events, sending alerts, running oracles, automatically pushing due transactions and more.</p>
+        </article>
+      </div>
+      <figure class="shot">
+        <img src="static/csr-dashboard.webp" width="982" height="819" loading="lazy" alt="CSR dashboard of a testnet runner: node synced, rank 1 in the CSR monitor, runner wallet with a 10,000 CKB stake, Service Runtime with 31 settled jobs and 66.73 CKB in tips, machine load.">
+        <figcaption>The CSR dashboard of a testnet runner, CSR 0.5.3: node sync, ranking, wallet and stake, jobs and tips earned, machine load.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="wrap steps-sec" aria-labelledby="how-title">
+    <h2 id="how-title" class="h2">How a node joins</h2>
+    <ol class="steps">
+      <li><h3>Install beside your node</h3><p>Windows or Linux. The installer finds your synced full node and proves its identity.</p></li>
+      <li><h3>The monitor checks it</h3><p>Every 10 minutes: a signed challenge on tip and block hashes. Once a day: blocks over P2P.</p></li>
+      <li><h3>Your node builds a record</h3><p>Provisional for 7 days, then ranked by availability over 30 and 365 days, sync and age.</p></li>
+      <li><h3>The gate opens</h3><p>With 20 ranked runners, 120 days of history and no single ASN or country in control, the Service Runtime starts on mainnet.</p></li>
+    </ol>
+  </section>
+
+  <section id="network" class="band band-alt" aria-labelledby="net-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="net-title" class="h2">CSR Network Monitor</h2>
+        <p id="summary" class="muted">Loading…</p>
+      </div>
+      <div class="rank-head">
+        <h3 class="h3">Ranking</h3>
+        <label class="filter" for="runner-filter"><span>Find your runner</span><input id="runner-filter" type="search" placeholder="0x… runner ID" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="table-wrap">
+        <table id="ranking">
+          <thead>
+            <tr><th>#</th><th>Runner</th><th>Score</th><th>30 d</th><th>365 d</th><th>Country</th><th>ASN</th><th>Status</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="rank-empty" class="muted small" hidden>No runner matches that ID.</p>
+      <div class="stats" id="stats">
+        <div><span class="k">Ranked</span><span class="n" id="s-ranked">–</span></div>
+        <div><span class="k">Provisional</span><span class="n" id="s-prov">–</span></div>
+        <div><span class="k">Countries</span><span class="n" id="s-cc">–</span></div>
+        <div><span class="k">ASN diversity</span><span class="n" id="s-div">–</span></div>
+      </div>
+      <p id="disclaimer" class="disclaimer">This monitor is a reputation source, not a proof: it shows that a runner answers, follows the chain and serves blocks over P2P.</p>
+
+    </div>
+  </section>
+
+  <section id="install" class="wrap install" aria-labelledby="install-title">
+    <h2 id="install-title" class="h2">Install CSR</h2>
+    <div class="install-grid">
+      <div class="win">
+        <div class="win-head">
+          <h3 class="h3">Windows</h3>
+          <p class="muted small">Windows 10 or 11, 64-bit · beta · this download is for Windows only</p>
+        </div>
+        <p class="need"><b>You need</b> a synced CKB full node on the same PC: <code>ckb.exe</code>, or Neuron with its internal <b>mainnet</b> node. Neuron on testnet is a light client and cannot be used.</p>
+        <a class="btn btn-primary dl-win" href="https://github.com/ckb-service-runner/ckb-service-runner/releases/latest/download/csr-x86_64-windows.zip">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v9m0 0L4.5 6.5M8 10l3.5-3.5M2 13.5h12"/></svg>
+          Download for Windows (latest)
+        </a>
+        <ol class="win-steps">
+          <li><b>Unzip the file.</b> Right-click the downloaded zip, choose <i>Extract All</i>. Do not run anything from inside the zip.</li>
+          <li><b>Double-click <code>install.cmd</code></b> and allow the Administrator prompt. The beta is not code-signed, so SmartScreen may warn: click <i>More info</i>, then <i>Run anyway</i>.</li>
+          <li><b>Let it find your node.</b> The installer locates <code>ckb.exe</code> or Neuron's node, proves the node identity and asks you to choose a dashboard password.</li>
+          <li><b>Open your dashboard.</b> It opens in your browser at the end: <code>127.0.0.1:8140</code> for mainnet, <code>:8130</code> for testnet. Later: Start menu, <i>CSR</i>, <i>CSR Dashboard</i>.</li>
+        </ol>
+        <div class="win-more">
+          <details>
+            <summary>Check the download (optional)</summary>
+            <p>In PowerShell, in your Downloads folder, compare the result with the line for <code>csr-&lt;version&gt;-x86_64-windows.zip</code> in <a href="https://github.com/ckb-service-runner/ckb-service-runner/releases/latest/download/SHA256SUMS">SHA256SUMS</a> of the latest release (same file, same hash). That file is signed with the CSR release key.</p>
+            <div class="code"><code id="hash-cmd">Get-FileHash .\csr-x86_64-windows.zip</code><button type="button" class="copy" data-copy="hash-cmd">Copy</button></div>
+          </details>
+          <details>
+            <summary>Update or uninstall</summary>
+            <p><b>Update:</b> download the new zip and run its <code>install.cmd</code>. Settings, keys and data are kept.</p>
+            <p><b>Uninstall:</b> run <code>uninstall.cmd</code> in <code>C:\Program Files\csr</code>. Add <code>-RemoveData</code> to delete the data and runner keys as well.</p>
+          </details>
+          <details>
+            <summary>Keep the PC awake</summary>
+            <p>The ranking measures availability. A PC that sleeps misses checks and drops in score. Set sleep to <i>Never</i> while plugged in.</p>
+          </details>
+        </div>
+      </div>
+
+      <aside class="linux">
+        <h3 class="h3">Linux</h3>
+        <p>Use the installer from the GitHub repository. It sets up one service per network and updates itself with signed releases.</p>
+        <div class="code"><code id="linux-cmd">sudo bash install.sh</code><button type="button" class="copy" data-copy="linux-cmd">Copy</button></div>
+        <a class="btn btn-ghost" href="https://github.com/ckb-service-runner/ckb-service-runner#readme">Install guide on GitHub</a>
+      </aside>
+    </div>
+  </section>
+
+  <section id="faq" class="band" aria-labelledby="faq-title">
+    <div class="wrap faq-in">
+      <h2 id="faq-title" class="h2">Questions</h2>
+      <div class="faq">
+        <details>
+          <summary>Does it cost CKB?</summary>
+          <p>The dashboard and the ranking are free. To run paid jobs later, a runner registers with a Nervos DAO deposit of at least 10,000 CKB, which stays yours and keeps earning DAO interest, plus about 700 CKB in the runner wallet for its registry cell and fees.</p>
+        </details>
+        <details>
+          <summary>Can I earn CKB on mainnet today?</summary>
+          <p>Not yet. On mainnet CSR runs as a node dashboard and builds your ranking. The Service Runtime opens when the gate above is met. On testnet you can already run jobs with test CKB.</p>
+        </details>
+        <details>
+          <summary>What does the monitor publish about my node?</summary>
+          <p>A runner ID, its score, availability, country and network operator (ASN). Never your IP address, city or exact location: map dots stand for 2° areas.</p>
+        </details>
+        <details>
+          <summary>Does it open my node to the internet?</summary>
+          <p>No. The dashboard listens only on your machine. CSR answers the monitor's checks, and behind a home router it connects out by itself.</p>
+        </details>
+        <details>
+          <summary>Why does a full node matter?</summary>
+          <p>Apps that hand work to independent nodes need nodes that hold the chain themselves. More independent full nodes also make the network harder to capture.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap community" aria-labelledby="com-title">
+    <h2 id="com-title" class="h2">Join the people building it</h2>
+    <div class="links">
+      <a class="link-tile" href="https://talk.nervos.org/t/a-revenue-layer-for-ckb-nodes/10734">
+        <span class="k">Nervos Talk</span>
+        <span class="t">A Revenue Layer for CKB Nodes</span>
+        <span class="d">The idea, the economics and the discussion.</span>
+      </a>
+      <a class="link-tile" href="https://t.me/ckbrunner">
+        <span class="k">Telegram</span>
+        <span class="t">t.me/ckbrunner</span>
+        <span class="d">Help with installs, release news, node operators.</span>
+      </a>
+      <a class="link-tile" href="https://github.com/ckb-service-runner/">
+        <span class="k">GitHub</span>
+        <span class="t">ckb-service-runner</span>
+        <span class="d">Runner and monitor source, issues and releases.</span>
+      </a>
+    </div>
+  </section>
 </main>
+
+<footer class="site-footer">
+  <div class="wrap foot-in">
+    <p>CSR Network Monitor <span id="mon-version"></span> · monitor key <code id="mon-key">–</code></p>
+    <p><a href="https://github.com/ckb-service-runner/csr-network-monitor">Monitor source</a> · <a href="https://github.com/ckb-service-runner/ckb-service-runner">Runner source</a> · <a href="https://talk.nervos.org/t/a-revenue-layer-for-ckb-nodes/10734">Nervos Talk</a> · <a href="https://t.me/ckbrunner">Telegram</a></p>
+  </div>
+</footer>
 </body>
 </html>

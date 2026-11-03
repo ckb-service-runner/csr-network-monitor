@@ -263,3 +263,19 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
   established one). The other runners are left out like hidden ones and come back if they become the primary.
 - `nodes_reachable` counts distinct peer IDs; `/v1/nodes/{peer_id}` answers with the primary.
 - New tests (D45, D46): `acceptance/test_inactive_and_one_per_peer.py`.
+
+## D47 – landing page (3 Nov 2026)
+
+- The public page becomes the landing page for CSR: hero "A Revenue Layer for CKB Nodes", the Service Runtime gate
+  as 20 runner cells with history, ASN and country meters, what an operator gets, how a node joins, the network
+  (map, ranking with a runner filter, totals), Windows install, FAQ and community links. All element ids of the old
+  page stay, so the data code and tests keep working; it reads the same API.
+- Still nothing loads from outside (D42, CSP `default-src 'self'`): system fonts only, no GitHub API call.
+- Plain `<a href>` links are allowed to the `ckb-service-runner` GitHub organisation (any path, e.g. the latest
+  release), the Nervos Talk post (`talk.nervos.org/t/…`) and the Telegram group `t.me/ckbrunner`. Following a link
+  loads nothing into the page. Changed tests: `test_phase9.py` and `map/test_map_page.py`.
+- The world map sits right under the top bar. The top bar shows the CSR logo (`csr-logo.webp`) and the benefits
+  show a screenshot of a testnet runner's dashboard (`csr-dashboard.webp`). The API serves `.webp` from the web
+  folder; images have their own budget (100 KB) beside the 200 KB for code and text. New test: `test_images_served`.
+- The Windows button links to `releases/latest/download/csr-x86_64-windows.zip`. That needs every CSR release to
+  carry a copy of the Windows zip under this version-free name (same bytes as `csr-<version>-x86_64-windows.zip`).
