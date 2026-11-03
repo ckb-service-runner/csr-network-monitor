@@ -274,5 +274,8 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
 - Plain `<a href>` links are allowed to the `ckb-service-runner` GitHub organisation (any path, e.g. the latest
   release), the Nervos Talk post (`talk.nervos.org/t/…`) and the Telegram group `t.me/ckbrunner`. Following a link
   loads nothing into the page. Changed tests: `test_phase9.py` and `map/test_map_page.py`.
+- The world map sits right under the top bar. The top bar shows the CSR logo (`csr-logo.webp`) and the benefits
+  show a screenshot of a testnet runner's dashboard (`csr-dashboard.webp`). The API serves `.webp` from the web
+  folder; images have their own budget (100 KB) beside the 200 KB for code and text. New test: `test_images_served`.
 - The Windows button links to `releases/latest/download/csr-x86_64-windows.zip`. That needs every CSR release to
   carry a copy of the Windows zip under this version-free name (same bytes as `csr-<version>-x86_64-windows.zip`).

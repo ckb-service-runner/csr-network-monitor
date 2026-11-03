@@ -25,7 +25,7 @@ _RANK_KEYS = ("runner_id", "rank", "score", "provisional", "status", "flags", "a
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _STATIC_TYPES = {".html": "text/html; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
                  ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
-                 ".svg": "image/svg+xml"}
+                 ".svg": "image/svg+xml", ".webp": "image/webp"}
 _JSON_HEADERS = {"Content-Type": "application/json; charset=utf-8",
                  "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store",
                  "X-Content-Type-Options": "nosniff"}

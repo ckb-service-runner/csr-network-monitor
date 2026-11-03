@@ -71,9 +71,6 @@ p { margin: 0; }
 .topbar-in { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-family: var(--f-display); font-variation-settings: "wdth" 115; font-weight: 800; letter-spacing: .01em; }
 .brand b { font-weight: 550; color: var(--muted); }
-.brand-mark { width: 22px; height: 22px; flex: none; }
-.brand-mark rect { fill: var(--accent); }
-.brand-mark rect.o { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 2.4 1.8; }
 .nav { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .nav a { color: var(--ink); text-decoration: none; font-size: var(--step--1); font-weight: 500; padding: 6px 10px; border-radius: 6px; }
 .nav a:hover { background: var(--band); }
@@ -243,3 +240,17 @@ details .code { margin-bottom: 14px; }
 .site-footer { border-top: 1px solid var(--line); padding-block: 24px 32px; color: var(--muted); font-size: .82rem; }
 .foot-in { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; }
 .site-footer code { font-size: .78rem; }
+
+/* Map band under the top bar, logo, dashboard screenshot (D47) */
+:root { --logo-tile: transparent; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --logo-tile: #dfe9e4; } }
+:root[data-theme="dark"] { --logo-tile: #dfe9e4; }
+.brand-mark { width: 32px; height: 32px; border-radius: 7px; background: var(--logo-tile); }
+.mapband { padding-block: 20px 4px; }
+.mapband .mapbox { margin-top: 0; }
+.maplabel { display: flex; align-items: center; gap: 8px; font: .75rem/1.4 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.live { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; animation: pulse 2s ease-out infinite; }
+.hero { padding-block: clamp(24px, 4vw, 48px) clamp(32px, 5vw, 56px); }
+.shot { margin: clamp(32px, 5vw, 56px) auto 0; max-width: 980px; display: grid; gap: 10px; }
+.shot img { display: block; width: 100%; max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 24px 60px -36px color-mix(in srgb, var(--ink) 55%, transparent); background: #fff; }
+.shot figcaption { color: var(--muted); font-size: var(--step--1); text-align: center; }
