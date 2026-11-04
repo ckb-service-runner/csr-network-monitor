@@ -279,3 +279,10 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
   folder; images have their own budget (100 KB) beside the 200 KB for code and text. New test: `test_images_served`.
 - The Windows button links to `releases/latest/download/csr-x86_64-windows.zip`. That needs every CSR release to
   carry a copy of the Windows zip under this version-free name (same bytes as `csr-<version>-x86_64-windows.zip`).
+
+## D48 – install video link (4 Nov 2026)
+
+- The Windows install box gets a second button beside the download: "Watch the 1-minute install video", a plain
+  `<a href>` to the YouTube video `https://youtu.be/THpQqQx0Iig`.
+- No embed: the page still loads nothing from outside (D42, D47, CSP `default-src 'self'`). Only this exact video
+  URL is added to the allowed plain links. Changed tests: `test_phase9.py` and `map/test_map_page.py`.

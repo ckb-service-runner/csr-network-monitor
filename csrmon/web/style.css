@@ -201,7 +201,7 @@ tr.empty td { color: var(--muted); text-align: center; padding: 24px; white-spac
 @media (max-width: 900px) { .install-grid { grid-template-columns: minmax(0, 1fr); } }
 .win { background: var(--surface); border: 1.5px solid var(--accent); border-radius: 14px; padding: clamp(18px, 3vw, 28px); display: grid; gap: 18px; min-width: 0; }
 .win-head { display: grid; gap: 2px; }
-.win .dl-win { justify-self: start; }
+.win .dl-win, .win .dl-video { justify-self: start; }
 .win-file { font-family: var(--f-mono); font-size: .82rem; font-weight: 600; }
 .need { padding: 12px 14px; background: var(--band); border-radius: 8px; font-size: .94rem; }
 .win-steps { margin: 0; padding: 0; list-style: none; counter-reset: w; display: grid; gap: 14px; }

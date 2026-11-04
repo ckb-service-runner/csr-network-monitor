@@ -66,8 +66,8 @@ def test_web_budget_and_no_urls():
             continue
         total += os.path.getsize(p)
         text = open(p, encoding="utf-8").read()
-        # plain <a href> links load nothing; allow the project's GitHub org, its Nervos Talk post and Telegram (D42, D47)
-        text = re.sub(r'<a\b([^>]*?)\shref="https://(?:github\.com/ckb-service-runner/[\w./#-]*|talk\.nervos\.org/t/[\w./-]+|t\.me/ckbrunner)"', "<a", text)
+        # plain <a href> links load nothing; allow the project's GitHub org, its Nervos Talk post and Telegram and the install video (D42, D47, D48)
+        text = re.sub(r'<a\b([^>]*?)\shref="https://(?:github\.com/ckb-service-runner/[\w./#-]*|talk\.nervos\.org/t/[\w./-]+|t\.me/ckbrunner|youtu\.be/THpQqQx0Iig)"', "<a", text)
         assert not re.search(r"https?://", text), name
         assert "//cdn" not in text and "@import" not in text, name
     assert total < 200_000, total
