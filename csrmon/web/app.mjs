@@ -141,12 +141,31 @@ function renderRanking(items) {
   }
 }
 
-$("runner-filter").addEventListener("input", (ev) => {
-  const q = ev.target.value.trim().toLowerCase();
+function applyFilter(highlight) {
+  const q = $("runner-filter").value.trim().toLowerCase();
   const items = q ? rankingItems.filter((it) => it.runner_id.toLowerCase().includes(q)) : rankingItems;
   renderRanking(items);
   $("rank-empty").hidden = !(q && rankingItems.length && !items.length);
-});
+  $("runner-hint").hidden = true;
+  if (!highlight) return;
+  const tr = items.length ? $("ranking").tBodies[0].rows[0] : null;
+  if (tr) {
+    tr.classList.add("runner-highlight");
+    tr.scrollIntoView({ block: "center" });
+  } else {
+    $("rank-empty").hidden = true;
+    $("runner-hint").textContent = "Runner not in the ranking yet (new runners appear after their first probes; unranked runners are listed with a reason).";
+    $("runner-hint").hidden = false;
+  }
+}
+
+$("runner-filter").addEventListener("input", () => applyFilter(false));
+
+// Deep link from the runner dashboard: /?runner=0x<64 hex>. Anything else is ignored.
+function linkedRunner() {
+  const v = new URLSearchParams(location.search).get("runner");
+  return v && /^0x[0-9a-f]{64}$/i.test(v.trim()) ? v.trim() : null;
+}
 
 function renderMonitor(mon) {
   $("mon-version").textContent = mon.version ? "v" + mon.version : "";
@@ -201,7 +220,10 @@ async function main() {
     renderSummary(summary);
     renderMap(locations, summary.by_country);
     rankingItems = runners.items || [];
+    const linked = linkedRunner();
+    if (linked) $("runner-filter").value = linked;
     renderRanking(rankingItems);
+    if (linked) applyFilter(true);
     if (usedSnapshot && SNAPSHOT.__taken) {
       const n = $("snapshot-note");
       n.hidden = false;

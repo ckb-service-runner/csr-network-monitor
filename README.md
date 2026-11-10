@@ -42,6 +42,8 @@ python3 -m venv .venv && .venv/bin/pip install pytest && .venv/bin/python -m pyt
 node --test acceptance/phase9_format.test.mjs
 ```
 
+The monitor page accepts `/?runner=<runner id>` (0x + 64 hex): it fills the runner filter, scrolls to the row and highlights it.
+
 ## Documentation
 
 - [docs/INSTALL.md](docs/INSTALL.md) – installation, systemd, Caddy, forwarded topology

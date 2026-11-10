@@ -279,3 +279,11 @@ Full list in the runner repository, `docs/decisions.md`. For the monitor:
   folder; images have their own budget (100 KB) beside the 200 KB for code and text. New test: `test_images_served`.
 - The Windows button links to `releases/latest/download/csr-x86_64-windows.zip`. That needs every CSR release to
   carry a copy of the Windows zip under this version-free name (same bytes as `csr-<version>-x86_64-windows.zip`).
+
+## mon-runner-link
+
+- `/?runner=0x<64 hex>` (case-insensitive; anything else is ignored) fills `#runner-filter` once the ranking has loaded,
+  filters, scrolls the first row into view and marks it `runner-highlight` (accent colours, so it works in both themes).
+- No match: the line `#runner-hint` appears under the filter. Typing in the filter afterwards clears the highlight
+  and the hint and works as before. The filter logic is now one function (`applyFilter`). No new URLs or inline scripts.
+- Documented in README.md.
